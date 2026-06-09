@@ -1,0 +1,14 @@
+/node_modules
+/.idea
+/dist
+/build
+/.vscode
+.DS_Store
+*.log
+*.env
+*.bak
+*.tmp
+*.swp
+*.swo
+/.zed
+/.logos
