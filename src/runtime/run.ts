@@ -169,16 +169,16 @@ async function runTest(
   const timeout = test.timeout ?? opts.defaultTimeout;
   const start = performance.now();
   try {
-    for (const fn of beforeEach) await fn();
+    for (const fn of beforeEach) await withTimeout(fn, timeout, "BeforeEach");
     await withTimeout(test.fn, timeout, "Test");
     // afterEach runs even on success; failures here fail the test.
-    for (const fn of afterEach) await fn();
+    for (const fn of afterEach) await withTimeout(fn, timeout, "AfterEach");
     results.push({ fullName: name, state: "pass", durationMs: performance.now() - start });
   } catch (err) {
     // Best-effort afterEach cleanup on failure (ignore secondary errors).
     for (const fn of afterEach) {
       try {
-        await fn();
+        await withTimeout(fn, timeout, "AfterEach");
       } catch {
         /* swallow cleanup error after a primary failure */
       }

@@ -41,6 +41,9 @@ describe("hooks order", () => {
   });
 
   test("second sees prior after()", () => {
+    // `calls` persists across tests in this describe: the first test's beforeEach
+    // pushed "before", its afterEach pushed "after", then this test's beforeEach
+    // pushed "before" again — proving afterEach fired between the two tests.
     expect(calls).toEqual(["before", "after", "before"]);
   });
 });

@@ -37,7 +37,9 @@ async function discover(config: ResolvedLightningConfig, fileFilters: string[]):
   });
   const normalized = matches.map((m) => m.split(path.sep).join("/")).sort();
   if (fileFilters.length === 0) return normalized;
-  return normalized.filter((f) => fileFilters.some((needle) => f.includes(needle)));
+  // Normalize filters too, so backslash-separated needles (Windows) match forward-slash paths.
+  const needles = fileFilters.map((n) => n.split(path.sep).join("/"));
+  return normalized.filter((f) => needles.some((needle) => f.includes(needle)));
 }
 
 export interface RunResult {
@@ -45,12 +47,22 @@ export interface RunResult {
   files: FileResult[];
 }
 
+/** Build the reporter from the resolved config. Phase 0 ships only `default`. */
+function createReporter(config: ResolvedLightningConfig): Reporter {
+  const ids = config.reporters.length > 0 ? config.reporters : ["default"];
+  const unknown = ids.filter((id) => id !== "default");
+  if (unknown.length > 0) {
+    throw new Error(`Unknown reporter(s): ${unknown.join(", ")}. Phase 0 ships only "default".`);
+  }
+  return createDefaultReporter({ root: config.root });
+}
+
 export async function runTests(
   overrides: ConfigOverrides = {},
   fileFilters: string[] = [],
 ): Promise<RunResult> {
   const config = await resolveLightningConfig(overrides);
-  const reporter: Reporter = createDefaultReporter({ root: config.root });
+  const reporter: Reporter = createReporter(config);
 
   if (config.globals) installGlobals();
 

@@ -34,7 +34,10 @@ export interface ConfigOverrides {
 function findConfigFile(root: string, explicit?: string): string | undefined {
   if (explicit) {
     const abs = path.isAbsolute(explicit) ? explicit : path.join(root, explicit);
-    return existsSync(abs) ? abs : undefined;
+    if (!existsSync(abs)) {
+      throw new Error(`Config file not found: ${explicit} (resolved to ${abs})`);
+    }
+    return abs;
   }
   for (const name of CONFIG_NAMES) {
     const abs = path.join(root, name);
@@ -68,14 +71,19 @@ function toRegExp(pattern: string | RegExp | undefined): RegExp | undefined {
 export async function resolveLightningConfig(
   overrides: ConfigOverrides = {},
 ): Promise<ResolvedLightningConfig> {
-  const root = path.resolve(overrides.root ?? process.cwd());
-  const configFile = findConfigFile(root, overrides.config);
+  // Config discovery/loading uses the CLI root (or cwd); the file itself may then
+  // declare its own `root` for running tests.
+  const cwd = path.resolve(overrides.root ?? process.cwd());
+  const configFile = findConfigFile(cwd, overrides.config);
 
   let fileConfig: LightningConfig = {};
-  if (configFile) fileConfig = await loadConfigFile(root, configFile);
+  if (configFile) fileConfig = await loadConfigFile(cwd, configFile);
 
   const fileTest: TestOptions = fileConfig.test ?? {};
   const { test: _omitTest, root: _omitRoot, ...nasti } = fileConfig;
+
+  // Priority: CLI override ← file config ← cwd.
+  const root = path.resolve(overrides.root ?? fileConfig.root ?? process.cwd());
 
   const namePattern = toRegExp(overrides.testNamePattern ?? fileTest.testNamePattern);
 

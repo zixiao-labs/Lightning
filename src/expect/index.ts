@@ -41,8 +41,16 @@ export function deepEqual(a: unknown, b: unknown): boolean {
   }
   if (a instanceof Set || b instanceof Set) {
     if (!(a instanceof Set) || !(b instanceof Set) || a.size !== b.size) return false;
+    // Match each element of `a` to a *distinct* element of `b` — without tracking used
+    // slots, two equal-by-structure members of `a` could both claim one member of `b`.
     const bv = [...b];
-    return [...a].every((av) => bv.some((x) => deepEqual(av, x)));
+    const used = new Array<boolean>(bv.length).fill(false);
+    return [...a].every((av) => {
+      const idx = bv.findIndex((x, i) => !used[i] && deepEqual(av, x));
+      if (idx === -1) return false;
+      used[idx] = true;
+      return true;
+    });
   }
 
   const aArr = Array.isArray(a);

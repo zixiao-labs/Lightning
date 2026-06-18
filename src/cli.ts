@@ -35,7 +35,10 @@ function toOverrides(flags: CliFlags): ConfigOverrides {
   if (flags.config !== undefined) o.config = flags.config;
   if (flags.testNamePattern !== undefined) o.testNamePattern = flags.testNamePattern;
   if (flags.globals !== undefined) o.globals = flags.globals;
-  if (flags.reporter !== undefined) o.reporter = flags.reporter;
+  // cac always populates `reporter` with its `{ default: "default" }` value, so an
+  // unmodified flag is indistinguishable from `--reporter default`. Treat the default
+  // as "not provided" to keep priority order (cac default ← config file ← explicit flag).
+  if (flags.reporter !== undefined && flags.reporter !== "default") o.reporter = flags.reporter;
   if (flags.silent !== undefined) o.silent = flags.silent;
   return o;
 }
