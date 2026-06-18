@@ -20,15 +20,38 @@
   "license": "MIT",
   "author": "Zixiao Laboratories",
   "type": "module",
-  "main": "index.js",
+  "main": "./dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "bin": {
+    "lightning": "bin/lightning.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "bin"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"[lightning] dogfooding lands in Phase 2 — try the playground: node bin/lightning.mjs run --root playground/basic\""
   },
   "devDependencies": {
+    "@types/node": "^25.9.3",
     "tsdown": "^0.22.2",
-    "types": "^0.1.1"
+    "types": "^0.1.1",
+    "typescript": "^6.0.3"
   },
   "dependencies": {
-    "@nasti-toolchain/nasti": "^1.7.1"
+    "@nasti-toolchain/nasti": "^2.0.2",
+    "cac": "^7.0.0",
+    "tinyglobby": "^0.2.17",
+    "tinyrainbow": "^3.1.0"
   }
 }

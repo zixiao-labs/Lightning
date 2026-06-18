@@ -210,7 +210,7 @@ Nasti 2.0 为下游测试框架预留了精确的接缝（见 `NASTI_2.0_PLAN.md
 
 ## 4. 命名与待决问题
 
-- **命名主题**：Nasti 取自明日方舟干员；包描述自称"比神霄派雷法还快"。测试 API 默认走 Jest/Vitest 同名（`test`/`expect`/`vi`）以保证兼容——**不为主题牺牲迁移性**。可在品牌层（CLI banner、reporter 文案、debug 命名空间 `lightning:*`）体现雷法主题。
+- ~~**命名主题**：Nasti 取自明日方舟干员；包描述自称"比神霄派雷法还快"。测试 API 默认走 Jest/Vitest 同名（`test`/`expect`/`vi`）以保证兼容——**不为主题牺牲迁移性**。可在品牌层（CLI banner、reporter 文案、debug 命名空间 `lightning:*`）体现雷法主题。~~已处理，CLI允许加“⚡️”Emoji，但是不要牺牲可迁移性
 - **`vi` 命名空间名**：保留 `vi` 以兼容 Vitest 生态？还是用 `lt`/`lightning`？建议**双导出**（`vi` 别名 + 原生名），降低迁移摩擦。— 待决
 - **完整打包模式**：测试是否提供 opt-in 的 bundled 执行（更接近生产、更快冷启动 vs 失去逐模块隔离）？默认 unbundled。— Phase 4+ 评估
 - **是否 monorepo**：MVP 单包，Phase 2 评估拆包（expect/spy/runner 可独立复用价值高）。— 待决
