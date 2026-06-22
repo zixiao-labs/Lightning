@@ -6,10 +6,17 @@
  * top-level imports just works. The server is only spun up when a config file exists.
  */
 import { existsSync } from "node:fs";
+import { availableParallelism, cpus } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createServer } from "@nasti-toolchain/nasti";
-import type { LightningConfig, ResolvedLightningConfig, TestOptions } from "../types.ts";
+import type {
+  LightningConfig,
+  ResolvedLightningConfig,
+  TestOptions,
+  TestPool,
+} from "../types.ts";
+import { createMockTransformPlugin } from "../mock/index.ts";
 
 const CONFIG_NAMES = [
   "lightning.config.ts",
@@ -19,7 +26,12 @@ const CONFIG_NAMES = [
 ];
 
 const DEFAULT_INCLUDE = ["**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}"];
-const DEFAULT_EXCLUDE = ["**/node_modules/**", "**/dist/**", "**/.git/**", "**/.nasti/**"];
+const DEFAULT_EXCLUDE = [
+  "**/node_modules/**",
+  "**/dist/**",
+  "**/.git/**",
+  "**/.nasti/**",
+];
 
 /** CLI flags that override file/default config. */
 export interface ConfigOverrides {
@@ -29,13 +41,24 @@ export interface ConfigOverrides {
   testNamePattern?: string;
   reporter?: string;
   silent?: boolean;
+  pool?: TestPool;
+  maxWorkers?: number;
+  isolate?: boolean;
+  retry?: number;
+  repeats?: number;
+  testTimeout?: number;
+  update?: boolean;
 }
 
 function findConfigFile(root: string, explicit?: string): string | undefined {
   if (explicit) {
-    const abs = path.isAbsolute(explicit) ? explicit : path.join(root, explicit);
+    const abs = path.isAbsolute(explicit)
+      ? explicit
+      : path.join(root, explicit);
     if (!existsSync(abs)) {
-      throw new Error(`Config file not found: ${explicit} (resolved to ${abs})`);
+      throw new Error(
+        `Config file not found: ${explicit} (resolved to ${abs})`,
+      );
     }
     return abs;
   }
@@ -46,10 +69,16 @@ function findConfigFile(root: string, explicit?: string): string | undefined {
   return undefined;
 }
 
-async function loadConfigFile(root: string, file: string): Promise<LightningConfig> {
+async function loadConfigFile(
+  root: string,
+  file: string,
+): Promise<LightningConfig> {
   // `.mjs`/`.js` (ESM) can be imported directly; `.ts` needs the Nasti runner.
   if (/\.(mjs|js)$/.test(file)) {
-    const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
+    const mod = (await import(pathToFileURL(file).href)) as Record<
+      string,
+      unknown
+    >;
     return (mod.default ?? mod.config ?? {}) as LightningConfig;
   }
   const server = await createServer({ root, logLevel: "silent" });
@@ -66,6 +95,18 @@ function toRegExp(pattern: string | RegExp | undefined): RegExp | undefined {
   if (pattern === undefined) return undefined;
   if (pattern instanceof RegExp) return pattern;
   return new RegExp(pattern);
+}
+
+function defaultMaxWorkers(): number {
+  const count =
+    typeof availableParallelism === "function"
+      ? availableParallelism()
+      : cpus().length;
+  return Math.max(1, count - 1);
+}
+
+function resolvePool(pool: TestPool | undefined): TestPool {
+  return pool ?? "threads";
 }
 
 export async function resolveLightningConfig(
@@ -85,16 +126,40 @@ export async function resolveLightningConfig(
   // Priority: CLI override ← file config ← cwd.
   const root = path.resolve(overrides.root ?? fileConfig.root ?? process.cwd());
 
-  const namePattern = toRegExp(overrides.testNamePattern ?? fileTest.testNamePattern);
+  const namePattern = toRegExp(
+    overrides.testNamePattern ?? fileTest.testNamePattern,
+  );
+  const maxWorkers = Math.max(
+    1,
+    overrides.maxWorkers ??
+      fileTest.poolOptions?.maxWorkers ??
+      defaultMaxWorkers(),
+  );
+  const pool = resolvePool(overrides.pool ?? fileTest.pool);
+  const nastiPlugins = [createMockTransformPlugin(), ...(nasti.plugins ?? [])];
 
   const resolved: ResolvedLightningConfig = {
     root,
     include: fileTest.include ?? DEFAULT_INCLUDE,
     exclude: fileTest.exclude ?? DEFAULT_EXCLUDE,
     globals: overrides.globals ?? fileTest.globals ?? false,
-    testTimeout: fileTest.testTimeout ?? 5000,
-    reporters: overrides.reporter ? [overrides.reporter] : fileTest.reporters ?? ["default"],
-    nasti: { ...nasti, root, logLevel: overrides.silent ? "silent" : nasti.logLevel ?? "silent" },
+    testTimeout: overrides.testTimeout ?? fileTest.testTimeout ?? 5000,
+    reporters: overrides.reporter
+      ? [overrides.reporter]
+      : (fileTest.reporters ?? ["default"]),
+    pool,
+    poolOptions: { maxWorkers },
+    isolate: overrides.isolate ?? fileTest.isolate ?? true,
+    retry: Math.max(0, overrides.retry ?? fileTest.retry ?? 0),
+    repeats: Math.max(1, overrides.repeats ?? fileTest.repeats ?? 1),
+    updateSnapshots: overrides.update ?? fileTest.update ?? false,
+    snapshotDir: fileTest.snapshotDir ?? "__snapshots__",
+    nasti: {
+      ...nasti,
+      plugins: nastiPlugins,
+      root,
+      logLevel: overrides.silent ? "silent" : (nasti.logLevel ?? "silent"),
+    },
   };
   if (namePattern) resolved.testNamePattern = namePattern;
   return resolved;

@@ -14,12 +14,14 @@ import {
   test,
 } from "./collect.ts";
 import { expect } from "../expect/index.ts";
+import { vi } from "../mock/index.ts";
 
 export const api = {
   test,
   it,
   describe,
   expect,
+  vi,
   beforeAll,
   afterAll,
   beforeEach,

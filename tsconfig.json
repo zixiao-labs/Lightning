@@ -1,9 +1,13 @@
 {
-
   "compilerOptions": {
     "module": "nodenext",
     "target": "esnext",
     "types": ["node"],
+    "ignoreDeprecations": "6.0",
+    "baseUrl": ".",
+    "paths": {
+      "@lightning-js/lightning": ["src/index.ts"],
+    },
     "sourceMap": true,
     "declaration": true,
     "declarationMap": true,
@@ -17,6 +21,6 @@
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
-    "skipLibCheck": true
-  }
+    "skipLibCheck": true,
+  },
 }

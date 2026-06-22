@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     cli: "src/cli.ts",
+    worker: "src/runtime/worker.ts",
   },
   format: "esm",
   platform: "node",
