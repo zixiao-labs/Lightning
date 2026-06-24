@@ -1,20 +1,22 @@
 /**
- * Runner: walks a collected suite tree depth-first and produces results.
+ * Runner: walks a collected suite tree and produces results.
  *
  * Hook semantics mirror Jest/Vitest:
  *  - `beforeAll`/`afterAll` run once per suite (before/after its tasks),
  *  - `beforeEach` run outer→inner before every test, `afterEach` inner→outer after.
- *
- * `.only` convergence: when any `.only` exists in the file, a test runs only if it
- * is `.only` itself or lives under an `.only` suite.
  */
 import type { Suite, Test, TestError, TestResult } from "../types.ts";
+import { finishTestAssertions, startTestAssertions } from "../expect/index.ts";
 
 export interface RunOptions {
   hasOnly: boolean;
   defaultTimeout: number;
   /** Only run tests whose full dotted name matches. */
   namePattern?: RegExp;
+  retry: number;
+  repeats: number;
+  onTestStart?: (name: string) => void;
+  onTestEnd?: (name: string) => void | Promise<void>;
 }
 
 function toError(value: unknown): TestError {
@@ -27,7 +29,11 @@ function toError(value: unknown): TestError {
   return { message: typeof value === "string" ? value : String(value) };
 }
 
-function withTimeout(fn: () => void | Promise<void>, ms: number, label: string): Promise<void> {
+function withTimeout(
+  fn: () => void | Promise<void>,
+  ms: number,
+  label: string,
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let settled = false;
     const timer = setTimeout(() => {
@@ -68,14 +74,25 @@ function fullName(test: Test): string {
   return [...suitePath(test.suite), test.name].join(" > ");
 }
 
-/** Does this subtree contain at least one test that is active under the given flags? */
-function hasActiveTest(suite: Suite, inOnly: boolean, opts: RunOptions): boolean {
+function suiteName(suite: Suite): string {
+  return suitePath(suite).join(" > ") || "<root>";
+}
+
+function hasActiveTest(
+  suite: Suite,
+  inOnly: boolean,
+  opts: RunOptions,
+): boolean {
   for (const task of suite.tasks) {
     if (task.type === "test") {
       if (isTestActive(task, inOnly, opts)) return true;
     } else {
       const childInOnly = inOnly || task.mode === "only";
-      if (task.mode !== "skip" && task.mode !== "todo" && hasActiveTest(task, childInOnly, opts)) {
+      if (
+        task.mode !== "skip" &&
+        task.mode !== "todo" &&
+        hasActiveTest(task, childInOnly, opts)
+      ) {
         return true;
       }
     }
@@ -85,14 +102,18 @@ function hasActiveTest(suite: Suite, inOnly: boolean, opts: RunOptions): boolean
 
 function isTestActive(test: Test, inOnly: boolean, opts: RunOptions): boolean {
   if (opts.hasOnly && !(inOnly || test.mode === "only")) return false;
-  if (opts.namePattern && !opts.namePattern.test(fullName(test))) return false;
+  if (opts.namePattern) {
+    opts.namePattern.lastIndex = 0;
+    if (!opts.namePattern.test(fullName(test))) return false;
+  }
   return true;
 }
 
-export async function runSuiteTree(root: Suite, opts: RunOptions): Promise<TestResult[]> {
-  const results: TestResult[] = [];
-  await runSuite(root, opts, [], [], false, results);
-  return results;
+export async function runSuiteTree(
+  root: Suite,
+  opts: RunOptions,
+): Promise<TestResult[]> {
+  return runSuite(root, opts, [], [], false, false);
 }
 
 async function runSuite(
@@ -101,11 +122,14 @@ async function runSuite(
   beforeEachChain: Array<() => void | Promise<void>>,
   afterEachChain: Array<() => void | Promise<void>>,
   inOnly: boolean,
-  results: TestResult[],
-): Promise<void> {
+  inheritedConcurrent: boolean,
+): Promise<TestResult[]> {
+  const results: TestResult[] = [];
   const active = hasActiveTest(suite, inOnly, opts);
+  const suiteConcurrent = suite.sequential
+    ? false
+    : (suite.concurrent ?? inheritedConcurrent);
 
-  // Accumulate each-hooks for descendants regardless; only fire all-hooks if active.
   const beforeEach = [
     ...beforeEachChain,
     ...suite.hooks.filter((h) => h.type === "beforeEach").map((h) => h.fn),
@@ -116,35 +140,113 @@ async function runSuite(
   ];
 
   if (active) {
-    for (const h of suite.hooks.filter((h) => h.type === "beforeAll")) await h.fn();
+    try {
+      for (const h of suite.hooks.filter((h) => h.type === "beforeAll"))
+        await h.fn();
+    } catch (error) {
+      return markFailedActive(suite, opts, inOnly, toError(error));
+    }
   }
+
+  const concurrentQueue: Array<Promise<TestResult[]>> = [];
+  const flushConcurrent = async () => {
+    if (concurrentQueue.length === 0) return;
+    const chunks = await Promise.all(concurrentQueue.splice(0));
+    for (const chunk of chunks) results.push(...chunk);
+  };
 
   for (const task of suite.tasks) {
     if (task.type === "suite") {
+      await flushConcurrent();
       const childInOnly = inOnly || task.mode === "only";
       if (task.mode === "skip" || task.mode === "todo") {
-        markSkipped(task, task.mode === "todo" ? "todo" : "skip", results);
+        results.push(
+          ...markSkipped(task, task.mode === "todo" ? "todo" : "skip"),
+        );
         continue;
       }
-      await runSuite(task, opts, beforeEach, afterEach, childInOnly, results);
+      results.push(
+        ...(await runSuite(
+          task,
+          opts,
+          beforeEach,
+          afterEach,
+          childInOnly,
+          suiteConcurrent,
+        )),
+      );
     } else {
-      await runTest(task, opts, beforeEach, afterEach, inOnly, results);
+      const testConcurrent = task.sequential
+        ? false
+        : (task.concurrent ?? suiteConcurrent);
+      const run = () => runTest(task, opts, beforeEach, afterEach, inOnly);
+      if (testConcurrent) concurrentQueue.push(run());
+      else {
+        await flushConcurrent();
+        results.push(...(await run()));
+      }
     }
   }
+
+  await flushConcurrent();
 
   if (active) {
-    for (const h of suite.hooks.filter((h) => h.type === "afterAll")) await h.fn();
-  }
-}
-
-function markSkipped(suite: Suite, state: "skip" | "todo", results: TestResult[]): void {
-  for (const task of suite.tasks) {
-    if (task.type === "test") {
-      results.push({ fullName: fullName(task), state, durationMs: 0 });
-    } else {
-      markSkipped(task, state, results);
+    for (const h of suite.hooks.filter((h) => h.type === "afterAll")) {
+      try {
+        await h.fn();
+      } catch (error) {
+        results.push({
+          fullName: `${suiteName(suite)} > afterAll`,
+          state: "fail",
+          durationMs: 0,
+          error: toError(error),
+        });
+      }
     }
   }
+
+  return results;
+}
+
+function markSkipped(suite: Suite, state: "skip" | "todo"): TestResult[] {
+  const results: TestResult[] = [];
+  for (const task of suite.tasks) {
+    if (task.type === "test")
+      results.push({ fullName: fullName(task), state, durationMs: 0 });
+    else results.push(...markSkipped(task, state));
+  }
+  return results;
+}
+
+function markFailedActive(
+  suite: Suite,
+  opts: RunOptions,
+  inOnly: boolean,
+  error: TestError,
+): TestResult[] {
+  const results: TestResult[] = [];
+  for (const task of suite.tasks) {
+    if (task.type === "test") {
+      if (isTestActive(task, inOnly, opts)) {
+        results.push({
+          fullName: fullName(task),
+          state: "fail",
+          durationMs: 0,
+          error,
+        });
+      } else {
+        results.push({
+          fullName: fullName(task),
+          state: "skip",
+          durationMs: 0,
+        });
+      }
+    } else {
+      const childInOnly = inOnly || task.mode === "only";
+      results.push(...markFailedActive(task, opts, childInOnly, error));
+    }
+  }
+  return results;
 }
 
 async function runTest(
@@ -153,41 +255,114 @@ async function runTest(
   beforeEach: Array<() => void | Promise<void>>,
   afterEach: Array<() => void | Promise<void>>,
   inOnly: boolean,
-  results: TestResult[],
-): Promise<void> {
+): Promise<TestResult[]> {
   const name = fullName(test);
 
-  if (test.mode === "todo") {
-    results.push({ fullName: name, state: "todo", durationMs: 0 });
-    return;
-  }
+  if (test.mode === "todo")
+    return [{ fullName: name, state: "todo", durationMs: 0 }];
   if (test.mode === "skip" || !isTestActive(test, inOnly, opts)) {
-    results.push({ fullName: name, state: "skip", durationMs: 0 });
-    return;
+    return [{ fullName: name, state: "skip", durationMs: 0 }];
   }
 
+  const repeats = Math.max(1, test.repeats ?? opts.repeats);
+  const output: TestResult[] = [];
+  for (let repeatIndex = 1; repeatIndex <= repeats; repeatIndex++) {
+    const displayName =
+      repeats === 1 ? name : `${name} [repeat ${repeatIndex}/${repeats}]`;
+    output.push(
+      await runWithRetry(
+        test,
+        displayName,
+        opts,
+        beforeEach,
+        afterEach,
+        repeatIndex,
+      ),
+    );
+  }
+  return output;
+}
+
+async function runWithRetry(
+  test: Test,
+  displayName: string,
+  opts: RunOptions,
+  beforeEach: Array<() => void | Promise<void>>,
+  afterEach: Array<() => void | Promise<void>>,
+  repeatIndex: number,
+): Promise<TestResult> {
+  const retry = Math.max(0, test.retry ?? opts.retry);
+  let last: TestResult | undefined;
+  for (let attempt = 0; attempt <= retry; attempt++) {
+    const result = await runAttempt(
+      test,
+      displayName,
+      opts,
+      beforeEach,
+      afterEach,
+      repeatIndex,
+      attempt,
+    );
+    if (result.state === "pass") return result;
+    last = result;
+  }
+  return (
+    last ?? {
+      fullName: displayName,
+      state: "fail",
+      durationMs: 0,
+      retryCount: retry,
+    }
+  );
+}
+
+async function runAttempt(
+  test: Test,
+  displayName: string,
+  opts: RunOptions,
+  beforeEach: Array<() => void | Promise<void>>,
+  afterEach: Array<() => void | Promise<void>>,
+  repeatIndex: number,
+  attempt: number,
+): Promise<TestResult> {
   const timeout = test.timeout ?? opts.defaultTimeout;
   const start = performance.now();
+  let afterEachStarted = false;
+
+  startTestAssertions();
+  opts.onTestStart?.(displayName);
   try {
     for (const fn of beforeEach) await withTimeout(fn, timeout, "BeforeEach");
     await withTimeout(test.fn, timeout, "Test");
-    // afterEach runs even on success; failures here fail the test.
+    afterEachStarted = true;
     for (const fn of afterEach) await withTimeout(fn, timeout, "AfterEach");
-    results.push({ fullName: name, state: "pass", durationMs: performance.now() - start });
+    finishTestAssertions();
+    await opts.onTestEnd?.(displayName);
+    return {
+      fullName: displayName,
+      state: "pass",
+      durationMs: performance.now() - start,
+      ...(attempt > 0 ? { retryCount: attempt } : {}),
+      ...(repeatIndex > 1 ? { repeatIndex } : {}),
+    };
   } catch (err) {
-    // Best-effort afterEach cleanup on failure (ignore secondary errors).
-    for (const fn of afterEach) {
-      try {
-        await withTimeout(fn, timeout, "AfterEach");
-      } catch {
-        /* swallow cleanup error after a primary failure */
+    if (!afterEachStarted) {
+      for (const fn of afterEach) {
+        try {
+          await withTimeout(fn, timeout, "AfterEach");
+        } catch {
+          /* preserve the primary failure */
+        }
       }
     }
-    results.push({
-      fullName: name,
+    await opts.onTestEnd?.(displayName);
+    return {
+      fullName: displayName,
       state: "fail",
       durationMs: performance.now() - start,
       error: toError(err),
-    });
+      ...(attempt > 0 ? { retryCount: attempt } : {}),
+      ...(repeatIndex > 1 ? { repeatIndex } : {}),
+    };
   }
 }

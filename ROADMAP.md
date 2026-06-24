@@ -96,7 +96,9 @@ Nasti 2.0 为下游测试框架预留了精确的接缝（见 `NASTI_2.0_PLAN.md
 
 ---
 
-### Phase 1 — 执行引擎：Pool 与隔离
+### Phase 1 — 执行引擎：Pool 与隔离 ✅
+
+> 状态：已落地 `threads`/`forks`/`inline` pool、文件级 worker 隔离、全局 `.only` 收敛、`--testNamePattern`/文件过滤，以及 timeout/retry/repeats/concurrent 调度。
 
 **目标**：worker 池并行执行，测试文件级隔离，超时/重试/并发。
 
@@ -113,7 +115,9 @@ Nasti 2.0 为下游测试框架预留了精确的接缝（见 `NASTI_2.0_PLAN.md
 
 ---
 
-### Phase 2 — 断言、Mock、快照（Jest/Vitest 兼容核心）
+### Phase 2 — 断言、Mock、快照（Jest/Vitest 兼容核心） ✅
+
+> 状态：已落地 Jest/Vitest 核心 matcher、asymmetric/custom/soft/assertion count、`resolves`/`rejects`/`poll`、`vi.fn`/`spyOn`/fake timers/stub、基础 hoisted `vi.mock` transform，以及文件/inline snapshot 与 `--update`。
 
 **目标**：完整断言 + mock 生态，达到能迁移真实 Jest/Vitest 用例的程度。
 
@@ -222,8 +226,8 @@ Nasti 2.0 为下游测试框架预留了精确的接缝（见 `NASTI_2.0_PLAN.md
 | Phase | 主题 | 核心验收 |
 |---|---|---|
 | 0 | MVP 链路 | `lightning run` 串行跑通、退出码正确 |
-| 1 | Pool + 隔离 | 并行 + 文件级隔离 + 超时/重试 |
-| 2 | 断言/Mock/快照 | 迁移 Vitest 样例全绿 |
+| 1 | Pool + 隔离 ✅ | 并行 + 文件级隔离 + 超时/重试 |
+| 2 | 断言/Mock/快照 ✅ | 迁移 Vitest 样例全绿 |
 | 3 | Watch | 改一处只重跑受影响测试 |
 | 4 | 环境/覆盖率/报告/分片 | jsdom + v8 覆盖率 + JUnit + shard |
 | 5 | 浏览器模式 | Playwright 组件测试 |

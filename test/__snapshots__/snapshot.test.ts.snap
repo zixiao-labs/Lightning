@@ -1,0 +1,4 @@
+// Lightning Snapshot v1
+{
+  "matches a stored file snapshot 1": "{ framework: 'lightning', phases: [ 1, 2 ], ready: true }"
+}

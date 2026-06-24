@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: CI only needs to read the repo.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22, 24]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Dogfood + playground specs import `@lightning-js/lightning` by name. Nasti's
+      # module runner externalizes that bare import to Node, which resolves it from
+      # node_modules (NOT via tsconfig `paths`). A fresh `pnpm install` does not create
+      # this self-link, so recreate it explicitly before running any specs.
+      - name: Link package for self-dogfooding
+        run: |
+          mkdir -p node_modules/@lightning-js
+          ln -sfn ../.. node_modules/@lightning-js/lightning
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build and dogfood tests
+        run: pnpm test
+
+      # The default dogfood run uses the threads pool, so exercise forks too — its
+      # worker teardown path is otherwise untested and easy to regress.
+      - name: Dogfood tests (forks pool)
+        run: node bin/lightning.mjs run --root . --pool forks
+
+      - name: Playground smoke test
+        run: pnpm test:playground

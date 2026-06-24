@@ -40,7 +40,9 @@
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "test": "echo \"[lightning] dogfooding lands in Phase 2 — try the playground: node bin/lightning.mjs run --root playground/basic\""
+    "test": "pnpm build && node bin/lightning.mjs run --root .",
+    "test:playground": "pnpm build && node bin/lightning.mjs run --root playground/basic math.test strings.test",
+    "test:demo:fail": "pnpm build && node bin/lightning.mjs run --root playground/basic"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",

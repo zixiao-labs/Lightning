@@ -20,14 +20,23 @@ export {
   afterEach,
 } from "./runtime/collect.ts";
 export { expect, LightningAssertionError } from "./expect/index.ts";
+export { vi, fn, spyOn, isMockFunction } from "./mock/index.ts";
 export { defineConfig } from "./config/define.ts";
 
 export type {
   LightningConfig,
   TestOptions,
+  TestPool,
+  PoolOptions,
   Task,
   Suite,
   Test,
   TestResult,
   FileResult,
 } from "./types.ts";
+export type {
+  Matchers,
+  ExpectStatic,
+  AsymmetricMatcherInterface,
+} from "./expect/index.ts";
+export type { MockInstance, MockContext, MockResult } from "./mock/index.ts";
