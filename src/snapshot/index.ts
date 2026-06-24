@@ -37,7 +37,14 @@ function readSnapshotFile(file: string): Record<string, string> {
   const raw = readFileSync(file, "utf-8");
   const json = raw.replace(/^\/\/ Lightning Snapshot v1\n?/, "").trim();
   if (!json) return {};
-  return JSON.parse(json) as Record<string, string>;
+  try {
+    return JSON.parse(json) as Record<string, string>;
+  } catch (error) {
+    throw new Error(
+      `Failed to parse snapshot file ${file}: ${error instanceof Error ? error.message : String(error)}. ` +
+        "Delete the file or re-run with --update to regenerate it.",
+    );
+  }
 }
 
 export function startSnapshotFile(options: {

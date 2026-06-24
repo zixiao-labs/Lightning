@@ -105,8 +105,16 @@ function defaultMaxWorkers(): number {
   return Math.max(1, count - 1);
 }
 
+const VALID_POOLS: readonly TestPool[] = ["threads", "forks", "inline"];
+
 function resolvePool(pool: TestPool | undefined): TestPool {
-  return pool ?? "threads";
+  const resolved = pool ?? "threads";
+  if (!VALID_POOLS.includes(resolved)) {
+    throw new Error(
+      `Invalid pool: ${String(resolved)}. Expected one of ${VALID_POOLS.join(", ")}.`,
+    );
+  }
+  return resolved;
 }
 
 export async function resolveLightningConfig(

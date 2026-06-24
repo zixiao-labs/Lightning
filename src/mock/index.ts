@@ -214,6 +214,11 @@ export function spyOn<T extends object, K extends keyof T>(
       `vi.spyOn() can only spy on functions; received ${typeof original}`,
     );
   }
+  if (accessType !== "value" && typeof original !== "function") {
+    throw new Error(
+      `vi.spyOn() could not find a ${accessType}ter for property "${String(key)}"`,
+    );
+  }
 
   const restore = () => Object.defineProperty(owner, key, originalDescriptor);
   const mock = fn(typeof original === "function" ? original : undefined);
@@ -427,7 +432,15 @@ function advanceTimersByTime(ms: number): typeof vi {
 }
 
 function runAllTimers(): typeof vi {
+  // setInterval reschedules itself, so the queue may never drain. Bound the run
+  // (mirroring Vitest) instead of looping forever.
+  let iterations = 0;
   while (timers.size > 0) {
+    if (iterations++ >= 10_000) {
+      throw new Error(
+        "vi.runAllTimers() aborted after running 10000 timers; a setInterval likely never stops rescheduling",
+      );
+    }
     const nextTime = Math.min(
       ...[...timers.values()].map((timer) => timer.time),
     );
@@ -555,6 +568,8 @@ export function cleanupViState(): void {
   vi.unstubAllEnvs();
   vi.useRealTimers();
   vi.resetModules();
+  // Mocks are restored above; drop them so the registry doesn't grow across files.
+  REGISTERED_MOCKS.clear();
 }
 
 // ---- transform plugin for basic vi.mock hoisting ---------------------------
@@ -622,6 +637,9 @@ function namedImportsToDestructure(imports: string): string {
     .split(",")
     .map((part) => part.trim())
     .filter(Boolean)
+    // `import { type Foo, bar }` — type specifiers vanish at runtime, so they
+    // must not become destructuring targets.
+    .filter((part) => !/^type\s/.test(part))
     .map((part) => {
       const match = /^(\w+)\s+as\s+(\w+)$/.exec(part);
       return match ? `${match[1]}: ${match[2]}` : part;

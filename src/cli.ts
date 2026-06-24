@@ -45,7 +45,9 @@ function toNumber(
 ): number | undefined {
   if (value === undefined) return undefined;
   const parsed = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(parsed)) throw new Error(`Invalid ${name}: ${value}`);
+  // maxWorkers/retry/repeats/testTimeout are all non-negative integer counts.
+  if (!Number.isInteger(parsed) || parsed < 0)
+    throw new Error(`Invalid ${name}: ${value} (expected a non-negative integer)`);
   return parsed;
 }
 

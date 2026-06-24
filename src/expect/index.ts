@@ -1065,8 +1065,6 @@ function buildPollMatchers(
           )[name];
           if (!matcher) throw new Error(`Unknown matcher: ${String(name)}`);
           await matcher(...args);
-          if (soft && lastError instanceof LightningAssertionError)
-            assertionState.softErrors.pop();
           return;
         } catch (error) {
           lastError = error;
