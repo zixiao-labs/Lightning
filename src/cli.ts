@@ -1,13 +1,17 @@
 /**
  * Lightning CLI — mirrors Vitest's command/flag surface (via `cac`), with ⚡️ as the
- * only added branding. Phase 0 ships a single run; `watch` (bare `lightning`) lands
- * in Phase 3 and will become the default then, matching Vitest.
+ * only added branding.
+ *
+ *   lightning            # watch in a TTY, run-once in CI/non-TTY (like bare `vitest`)
+ *   lightning watch      # always watch
+ *   lightning run        # always run once and exit
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { cac } from "cac";
 import c from "tinyrainbow";
 import { runTests } from "./node/orchestrator.ts";
+import { watchTests } from "./node/watch.ts";
 import type { ConfigOverrides } from "./config/resolve.ts";
 import type { TestPool } from "./types.ts";
 
@@ -37,6 +41,8 @@ interface CliFlags {
   repeats?: string | number;
   testTimeout?: string | number;
   update?: boolean;
+  watch?: boolean;
+  clearScreen?: boolean;
 }
 
 function toNumber(
@@ -92,6 +98,34 @@ async function run(filters: string[], flags: CliFlags): Promise<void> {
   }
 }
 
+async function watch(filters: string[], flags: CliFlags): Promise<void> {
+  try {
+    await watchTests({
+      overrides: toOverrides(flags),
+      fileFilters: filters,
+      // cac defaults clearScreen to true and sets it false on --no-clearScreen.
+      // The spread keeps the key off entirely when somehow unset (exactOptional).
+      ...(flags.clearScreen !== undefined ? { clearScreen: flags.clearScreen } : {}),
+    });
+  } catch (err) {
+    console.error(
+      c.red("⚡️ lightning watch crashed:"),
+      err instanceof Error ? err.stack : err,
+    );
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * Bare `lightning` watches in an interactive terminal but runs once in CI /
+ * non-TTY (mirrors bare `vitest`). `--watch` / `--no-watch` overrides the
+ * heuristic.
+ */
+function shouldWatch(flags: CliFlags): boolean {
+  if (flags.watch !== undefined) return flags.watch;
+  return Boolean(process.stdin.isTTY);
+}
+
 const cli = cac("lightning");
 
 // Shared flag definitions (kept identical across the default + `run` commands).
@@ -116,6 +150,8 @@ function withFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
     .option("--repeats <number>", "Repeat each test this many times")
     .option("--test-timeout <ms>", "Default per-test timeout in milliseconds")
     .option("-u, --update", "Update snapshots")
+    .option("-w, --watch", "Rerun tests on file change (default in a TTY; use --no-watch to disable)")
+    .option("--no-clearScreen", "Keep the terminal scrollback between reruns")
     .option("--silent", "Silence Nasti server output") as T;
 }
 
@@ -123,10 +159,16 @@ withFlags(cli.command("run [...filters]", "Run tests once and exit")).action(
   (filters: string[], flags: CliFlags) => run(filters, flags),
 );
 
-// Bare `lightning [...filters]`: run once for now (becomes watch in Phase 3).
 withFlags(
-  cli.command("[...filters]", "Run tests (watch mode arrives in Phase 3)"),
-).action((filters: string[], flags: CliFlags) => run(filters, flags));
+  cli.command("watch [...filters]", "Rerun affected tests on file change"),
+).action((filters: string[], flags: CliFlags) => watch(filters, flags));
+
+// Bare `lightning [...filters]`: watch in a TTY, run once otherwise.
+withFlags(
+  cli.command("[...filters]", "Run tests (watch in a TTY, run once in CI)"),
+).action((filters: string[], flags: CliFlags) =>
+  shouldWatch(flags) ? watch(filters, flags) : run(filters, flags),
+);
 
 cli.help((sections) => {
   sections.unshift({
