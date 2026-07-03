@@ -136,19 +136,26 @@ Nasti 2.0 为下游测试框架预留了精确的接缝（见 `NASTI_2.0_PLAN.md
 
 ---
 
-### Phase 3 — Watch 模式（测试版 HMR）
+### Phase 3 — Watch 模式（测试版 HMR）✅
+
+> 状态：已落地 `lightning watch`（TTY 默认，CI/非 TTY 自动单跑）/ `lightning run`；自建反向依赖图（`src/node/dep-graph.ts`）反查受影响测试；SSR runner 缓存按「改动闭包」失效（含中间 importer，保证传递性新鲜度——见 §下「关键实现注记」）；交互式快捷键 `a/r/f/t/p/u/q`。
 
 **目标**：`lightning watch`（或 `lightning` 默认）—— 改一个源文件，只重跑受影响的测试。
 
-**关键设计**：
-- 复用 Nasti `test` 环境的 **`ModuleGraph` 做反向依赖追踪**：文件变更 → 查 importers 闭包 → 命中的测试文件集合 → 仅重跑这些。
-- 复用 Nasti `chokidar` watcher + HMR 通道；测试侧不做模块级 HMR（重跑文件即可），但保留转译缓存（未变模块不重转）。
-- 交互式终端：`a` 全跑 / `f` 仅失败 / `t` 按名过滤 / `p` 按文件 / `q` 退出（参考 Vitest）。
-- 与 Phase 1 pool 协作：watch 下保持 worker 常驻，重跑复用。
+**关键设计**（落地版）：
+- **反向依赖追踪**：Nasti 的 SSR module runner 只持有扁平缓存、不暴露带 `importers` 的 ModuleGraph（client 图在纯测试运行下为空，无 HTTP 请求填充），故 Lightning 自建依赖图（`src/node/dep-graph.ts`）：一个 `pre` transform 插件在 SSR 管线里观测每个模块，静态抽取 ESM import 说明符并经 plugin container `resolve` 成绝对路径，记录 importer→imported 边。文件变更 → 反查 importers 闭包 → 命中的测试文件集合 → 仅重跑这些。
+- **复用 Nasti `chokidar` watcher**（已忽略 node_modules/.git/.nasti）；测试侧不做模块级 HMR（重跑文件即可）。未变模块的求值缓存保留（不重转），改动闭包内的模块按需失效。
+- **交互式终端**：`a` 全跑（清运行期名过滤）/ `r` 当前过滤重跑 / `f` 仅失败 / `t` 按名过滤 / `p` 按文件 / `u` 更新快照 / `q` 退出（对齐 Vitest）。
+- **执行模型**：watch 走进程内（inline）单服务器常驻——暖缓存是重跑快的关键，worker 跨进程无法共享。Phase 1 的进程级隔离在 dev 循环里换成速度，但每文件的 collector/vi 状态仍逐文件重置。
 
-**交付物**：`src/node/watch.ts`、终端交互层。
+**关键实现注记**（踩坑记录）：
+- ⚠️ **不能用 `?t=` query 做缓存爆破**：Nasti 把模块 id 原样喂给 rolldown 的 `moduleRunnerTransform`，后者按 id 扩展名推断 loader，`*.ts?t=123` 无法识别 → 产出空代码 → 模块体根本不执行（收集到 0 个测试，且无报错）。改为**失效 + 干净 URL 重载**强制重新求值。
+- **传递性新鲜度**：runner 命中缓存时跳过模块体，故未失效的*中间 importer* 永不会重新 import 变更的叶子（→ 读到旧值）。Nasti 的 watcher 只失效「那个变更文件」本身，因此 Lightning 额外失效其 importer 闭包里的中间模块。SSR runner 无公开失效 API，唯一可达的机制是 Nasti watcher 的 `change` 事件会调 `invalidateFile`——故 Lightning 对需失效的路径**合成 `change` 事件**（并对自身监听做抑制，避免触发多余重跑）。
+- **依赖图的 import 抽取**须覆盖具名导入（`import { x } from "y"`）；正则字符类不可排除 `{`，否则具名导入全数漏抓、图为空、改源不触发重跑。
 
-**验收**：大型项目改一个 util，1s 内只重跑依赖它的测试。
+**交付物**：`src/node/watch.ts`、`src/node/dep-graph.ts`、`src/cli.ts`（`watch` 命令 + TTY 默认）、终端交互层。
+
+**验收**：✅ `playground/watch-fixture`（`sum.test → mid → util` 传递链 + 独立 `other.test`）——改 `util.ts`，仅 `sum.test.ts` 重跑、且经缓存的 `mid.ts` 读到新值（毫秒级，远低于 1s），`other.test.ts` 不动；改回亦能恢复通过。
 
 ---
 
@@ -228,7 +235,7 @@ Nasti 2.0 为下游测试框架预留了精确的接缝（见 `NASTI_2.0_PLAN.md
 | 0 | MVP 链路 | `lightning run` 串行跑通、退出码正确 |
 | 1 | Pool + 隔离 ✅ | 并行 + 文件级隔离 + 超时/重试 |
 | 2 | 断言/Mock/快照 ✅ | 迁移 Vitest 样例全绿 |
-| 3 | Watch | 改一处只重跑受影响测试 |
+| 3 | Watch ✅ | 改一处只重跑受影响测试 |
 | 4 | 环境/覆盖率/报告/分片 | jsdom + v8 覆盖率 + JUnit + shard |
 | 5 | 浏览器模式 | Playwright 组件测试 |
 | 6 | 兼容/类型/基准/武陵 | Jest/Vitest 兼容 + 类型测试 + bench |
