@@ -42,6 +42,7 @@ import { resolveLightningConfig, type ConfigOverrides } from "../config/resolve.
 import { runTestFile } from "../runtime/file-runner.ts";
 import { createDefaultReporter, type Reporter } from "../reporters/default.ts";
 import { DependencyGraph, createDepTrackerPlugin } from "./dep-graph.ts";
+import { normalizePath } from "./path-utils.ts";
 
 /** Debounce window for coalescing a burst of file changes into one rerun. */
 const RERUN_DEBOUNCE_MS = 100;
@@ -75,9 +76,9 @@ async function discover(config: ResolvedLightningConfig, filters: string[]): Pro
     absolute: true,
     dot: false,
   });
-  const normalized = matches.map((m) => m.split(path.sep).join("/")).sort();
+  const normalized = matches.map(normalizePath).sort();
   if (filters.length === 0) return normalized;
-  const needles = filters.map((n) => n.split(path.sep).join("/"));
+  const needles = filters.map(normalizePath);
   return normalized.filter((file) => needles.some((needle) => file.includes(needle)));
 }
 
@@ -99,7 +100,7 @@ function isTestFile(file: string): boolean {
 }
 
 function rel(root: string, file: string): string {
-  return path.relative(root, file).split(path.sep).join("/");
+  return normalizePath(path.relative(root, file));
 }
 
 export interface WatchOptions {
@@ -143,7 +144,7 @@ export async function watchTests(options: WatchOptions): Promise<void> {
 
   function visibleTestFiles(): string[] {
     if (activeFileFilters.length === 0) return [...allTestFiles];
-    const needles = activeFileFilters.map((n) => n.split(path.sep).join("/"));
+    const needles = activeFileFilters.map(normalizePath);
     return [...allTestFiles].filter((f) => needles.some((needle) => f.includes(needle)));
   }
 
@@ -251,7 +252,7 @@ export async function watchTests(options: WatchOptions): Promise<void> {
 
   /** Debounced: collect changed files, compute affected tests, rerun. */
   function scheduleAffectedRerun(changedFile: string): void {
-    pendingAffected.add(changedFile);
+    pendingAffected.add(normalizePath(path.resolve(changedFile)));
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       debounceTimer = undefined;
@@ -278,29 +279,53 @@ export async function watchTests(options: WatchOptions): Promise<void> {
       emit(event: string, file: string): boolean;
     };
     for (const file of files) {
-      suppressedSynthetic.add(file);
+      const normalized = normalizePath(path.resolve(file));
+      suppressedSynthetic.add(normalized);
       try {
-        emitter.emit("change", file);
+        emitter.emit("change", normalized);
       } finally {
-        suppressedSynthetic.delete(file);
+        suppressedSynthetic.delete(normalized);
       }
     }
   }
 
+  function scheduleAffectedTargets(affected: Set<string>, intermediates: Set<string>): void {
+    // Only rerun affected files that still exist in the known test set and pass the
+    // active filename filter. Intermediates are invalidated regardless of visibility.
+    let targets = [...affected].filter((f) => allTestFiles.has(f));
+    if (activeFileFilters.length > 0) {
+      const needles = activeFileFilters.map(normalizePath);
+      targets = targets.filter((f) => needles.some((n) => f.includes(n)));
+    }
+
+    invalidateInRunner(intermediates);
+
+    if (targets.length === 0) {
+      // Nothing visible depended on the change — don't interrupt.
+      return;
+    }
+
+    process.stdout.write(
+      `${c.dim("rerun")} ${c.cyan(targets.map((f) => rel(config.root, f)).join(", "))}\n`,
+    );
+    schedule({ kind: "files", files: targets });
+  }
+
   function handleChangedFiles(changed: string[]): void {
+    const normalizedChanged = changed.map((file) => normalizePath(path.resolve(file)));
     // Newly created test files enter the known set.
     const newTests = new Set<string>();
-    for (const file of changed) {
+    for (const file of normalizedChanged) {
       if (isTestFile(file) && !allTestFiles.has(file)) {
         allTestFiles.add(file);
         newTests.add(file);
       }
     }
 
-    const changedSet = new Set(changed);
+    const changedSet = new Set(normalizedChanged);
     const affected = new Set<string>();
     const intermediates = new Set<string>();
-    for (const file of changed) {
+    for (const file of normalizedChanged) {
       if (newTests.has(file)) {
         // A brand-new test file has no importer history yet — just run it.
         affected.add(file);
@@ -320,23 +345,7 @@ export async function watchTests(options: WatchOptions): Promise<void> {
       graph.invalidate(file);
     }
 
-    // Only rerun affected files that pass the active filename filter.
-    let targets = [...affected];
-    if (activeFileFilters.length > 0) {
-      const needles = activeFileFilters.map((n) => n.split(path.sep).join("/"));
-      targets = targets.filter((f) => needles.some((n) => f.includes(n)));
-    }
-
-    if (targets.length === 0) {
-      // Nothing visible depended on the change — don't interrupt.
-      return;
-    }
-
-    invalidateInRunner(intermediates);
-    process.stdout.write(
-      `${c.dim("rerun")} ${c.cyan(targets.map((f) => rel(config.root, f)).join(", "))}\n`,
-    );
-    schedule({ kind: "files", files: targets });
+    scheduleAffectedTargets(affected, intermediates);
   }
 
   // ── Watcher: reuse Nasti's chokidar watcher (already ignoring node_modules/.git) ─
@@ -344,20 +353,29 @@ export async function watchTests(options: WatchOptions): Promise<void> {
     server.watcher;
 
   watcher.on("change", (file: string) => {
-    const abs = path.resolve(file);
+    const abs = normalizePath(path.resolve(file));
     if (suppressedSynthetic.has(abs)) return; // our own runner-invalidation emit
     scheduleAffectedRerun(abs);
   });
   watcher.on("add", (file: string) => {
-    const abs = path.resolve(file);
+    const abs = normalizePath(path.resolve(file));
     if (suppressedSynthetic.has(abs)) return;
     scheduleAffectedRerun(abs);
   });
   watcher.on("unlink", (file: string) => {
-    const abs = path.resolve(file);
+    const abs = normalizePath(path.resolve(file));
+    if (suppressedSynthetic.has(abs)) return;
+
+    const affected = new Set(graph.getAffectedTestFiles(abs, allTestFiles));
+    const intermediates = new Set<string>();
+    for (const imp of graph.getTransitiveImporters(abs)) {
+      if (imp !== abs && !allTestFiles.has(imp)) intermediates.add(imp);
+    }
+
     allTestFiles.delete(abs);
     failedFiles.delete(abs);
     graph.invalidate(abs);
+    scheduleAffectedTargets(affected, intermediates);
   });
 
   // ── Interactive terminal ────────────────────────────────────────────────────

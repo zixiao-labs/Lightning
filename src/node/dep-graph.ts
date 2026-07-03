@@ -21,6 +21,7 @@
  */
 import path from "node:path";
 import type { NastiPlugin } from "@nasti-toolchain/nasti";
+import { normalizePath } from "./path-utils.ts";
 
 /**
  * Extract ESM import/export specifiers from source code.
@@ -29,27 +30,43 @@ import type { NastiPlugin } from "@nasti-toolchain/nasti";
  * and dynamic `import("x")`. Bare specifiers (`react`, `node:fs`) are returned
  * too — the caller filters them by resolvability + project-root membership.
  */
-export function extractImportSpecifiers(code: string): string[] {
-  const specs = new Set<string>();
+interface ImportReference {
+  spec: string;
+  typeOnly: boolean;
+}
+
+function extractImportReferences(code: string): ImportReference[] {
+  const specs = new Map<string, boolean>();
+  const add = (spec: string, typeOnly: boolean) => {
+    specs.set(spec, (specs.get(spec) ?? true) && typeOnly);
+  };
 
   // `import … from "x"` and `export … from "x"` (re-exports are dependencies too).
   // The clause between the keyword and `from` may contain a `{ … }` binding list
   // (`import { a, b } from "x"`), so we only stop at a quote or semicolon — NOT a
   // brace, or named imports would never match. `\bfrom\s*['"]` anchors on the real
   // module specifier (a `from` *inside* the binding list isn't followed by a quote).
-  const fromRe = /\b(?:import|export)\b[^'";]*?\bfrom\s*(['"])([^'"]+)\1/g;
+  const fromRe = /\b(import|export)\b([^'";]*?)\bfrom\s*(['"])([^'"]+)\3/g;
   // Side-effect import: `import "x"` (no `from`, no clause).
   const sideRe = /\bimport\s*(['"])([^'"]+)\1/g;
   // Dynamic import: `import("x")`.
   const dynRe = /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g;
 
-  for (const re of [fromRe, sideRe, dynRe]) {
-    let m: RegExpExecArray | null;
+  let m: RegExpExecArray | null;
+  while ((m = fromRe.exec(code)) !== null) {
+    const clause = m[2]!.trim();
+    add(m[4]!, /^type(?:\s|$)/.test(clause));
+  }
+  for (const re of [sideRe, dynRe]) {
     while ((m = re.exec(code)) !== null) {
-      specs.add(m[2]!);
+      add(m[2]!, false);
     }
   }
-  return [...specs];
+  return [...specs].map(([spec, typeOnly]) => ({ spec, typeOnly }));
+}
+
+export function extractImportSpecifiers(code: string): string[] {
+  return extractImportReferences(code).map(({ spec }) => spec);
 }
 
 export class DependencyGraph {
@@ -69,8 +86,10 @@ export class DependencyGraph {
 
   /** Record `importer` depends on `imported` (both absolute file paths). */
   registerEdge(importer: string, imported: string): void {
-    this.bucket(this.imports, importer).add(imported);
-    this.bucket(this.importers, imported).add(importer);
+    const from = normalizePath(importer);
+    const to = normalizePath(imported);
+    this.bucket(this.imports, from).add(to);
+    this.bucket(this.importers, to).add(from);
   }
 
   /**
@@ -79,18 +98,20 @@ export class DependencyGraph {
    * are only updated when the importers themselves are re-transformed.
    */
   invalidate(file: string): void {
-    const outs = this.imports.get(file);
+    const key = normalizePath(file);
+    const outs = this.imports.get(key);
     if (outs) {
       for (const dep of outs) {
-        this.importers.get(dep)?.delete(file);
+        this.importers.get(dep)?.delete(key);
       }
-      this.imports.delete(file);
+      this.imports.delete(key);
     }
   }
 
   /** Has `file` ever been tracked (transformed) by the graph? */
   has(file: string): boolean {
-    return this.imports.has(file) || this.importers.has(file);
+    const key = normalizePath(file);
+    return this.imports.has(key) || this.importers.has(key);
   }
 
   /**
@@ -103,16 +124,18 @@ export class DependencyGraph {
    *   affects nothing.
    */
   getAffectedTestFiles(changedFile: string, testFiles: Set<string>): string[] {
-    if (testFiles.has(changedFile)) return [changedFile];
+    const changed = normalizePath(changedFile);
+    const tests = new Set([...testFiles].map(normalizePath));
+    if (tests.has(changed)) return [changed];
 
     const affected = new Set<string>();
-    const queue = [changedFile];
+    const queue = [changed];
     const seen = new Set<string>();
     while (queue.length > 0) {
       const current = queue.shift()!;
       if (seen.has(current)) continue;
       seen.add(current);
-      if (testFiles.has(current)) {
+      if (tests.has(current)) {
         affected.add(current);
         continue;
       }
@@ -138,7 +161,7 @@ export class DependencyGraph {
    */
   getTransitiveImporters(changedFile: string): string[] {
     const result = new Set<string>();
-    const queue = [changedFile];
+    const queue = [normalizePath(changedFile)];
     const seen = new Set<string>();
     while (queue.length > 0) {
       const current = queue.shift()!;
@@ -156,15 +179,82 @@ export class DependencyGraph {
 }
 
 function normalizeFile(id: string): string {
-  return id.split("?")[0]!;
+  return normalizePath(id.split("?")[0]!);
 }
 
 function isProjectSource(file: string, root: string): boolean {
   if (!file) return false;
-  const rel = path.relative(root, file);
+  const rel = path.relative(normalizePath(root), normalizePath(file));
   if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return false;
   // node_modules lives under root but is never user source we should track.
-  return !rel.split(path.sep).includes("node_modules");
+  return !normalizePath(rel).split("/").includes("node_modules");
+}
+
+const FALLBACK_SUFFIXES = [
+  "",
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".json",
+  "/index.ts",
+  "/index.tsx",
+  "/index.mts",
+  "/index.cts",
+  "/index.js",
+  "/index.jsx",
+  "/index.mjs",
+  "/index.cjs",
+  "/index.json",
+];
+
+function isRelativeSpecifier(spec: string): boolean {
+  return spec === "." || spec === ".." || spec.startsWith("./") || spec.startsWith("../");
+}
+
+function fallbackBase(spec: string, importer: string, root: string): string | undefined {
+  if (isRelativeSpecifier(spec)) return path.resolve(path.dirname(importer), spec);
+
+  if (path.isAbsolute(spec)) {
+    const absolute = normalizePath(spec);
+    if (isProjectSource(absolute, root)) return absolute;
+  }
+
+  // Vite-style absolute imports are project-root relative (`/src/foo`).
+  if (spec.startsWith("/")) return path.resolve(root, `.${spec}`);
+
+  return undefined;
+}
+
+function unresolvedProjectTargets(spec: string, importer: string, root: string): string[] {
+  const base = fallbackBase(spec, importer, root);
+  if (!base) return [];
+
+  const normalizedBase = normalizePath(base);
+  if (!isProjectSource(normalizedBase, root)) return [];
+
+  const suffixes = path.extname(normalizedBase) ? [""] : FALLBACK_SUFFIXES;
+  const targets = new Set<string>();
+  for (const suffix of suffixes) {
+    const target = normalizePath(`${normalizedBase}${suffix}`);
+    if (target !== importer && isProjectSource(target, root)) targets.add(target);
+  }
+  return [...targets];
+}
+
+function registerUnresolvedProjectEdges(
+  graph: DependencyGraph,
+  importer: string,
+  spec: string,
+  root: string,
+): void {
+  for (const target of unresolvedProjectTargets(spec, importer, root)) {
+    graph.registerEdge(importer, target);
+  }
 }
 
 /**
@@ -179,31 +269,37 @@ function isProjectSource(file: string, root: string): boolean {
  * calls.
  */
 export function createDepTrackerPlugin(graph: DependencyGraph, root: string): NastiPlugin {
+  const projectRoot = normalizePath(root);
   return {
     name: "lightning:dep-tracker",
     enforce: "pre",
     async transform(code, id) {
       const importer = normalizeFile(id);
-      if (!isProjectSource(importer, root)) return null;
+      if (!isProjectSource(importer, projectRoot)) return null;
 
       // Clear stale outgoing edges before re-registering from the current code.
       graph.invalidate(importer);
 
-      for (const spec of extractImportSpecifiers(code)) {
-        // Skip `node:` builtins and data/URL specifiers outright.
-        if (spec.startsWith("node:") || spec.startsWith("data:")) continue;
+      for (const { spec, typeOnly } of extractImportReferences(code)) {
+        // Skip type-only, `node:` builtins, and data/URL specifiers outright.
+        if (typeOnly || spec.startsWith("node:") || spec.startsWith("data:")) continue;
         // Bare specifiers (`react`, `@lightning-js/lightning`) resolve into
         // node_modules and are filtered by `isProjectSource` after resolution.
         try {
           const resolved = await this.resolve(spec, importer);
-          if (resolved == null) continue;
+          if (resolved == null) {
+            registerUnresolvedProjectEdges(graph, importer, spec, projectRoot);
+            continue;
+          }
           const resolvedId = typeof resolved === "string" ? resolved : resolved.id;
           const target = normalizeFile(resolvedId);
-          if (target !== importer && isProjectSource(target, root)) {
+          if (target !== importer && isProjectSource(target, projectRoot)) {
             graph.registerEdge(importer, target);
           }
         } catch {
-          // Unresolvable specifier (type-only, virtual, etc.) — ignore safely.
+          // Unresolvable local imports still need graph edges so adding the missing
+          // file can rerun importers; virtual/external specifiers produce no fallback.
+          registerUnresolvedProjectEdges(graph, importer, spec, projectRoot);
         }
       }
       return null;
