@@ -13,18 +13,34 @@ export interface ReporterManager extends Reporter {
 }
 
 export async function createReporterManager(config: ResolvedLightningConfig): Promise<ReporterManager> {
-  const reporters = await Promise.all((config.reporters.length ? config.reporters : ["default"]).map((r) => resolveReporter(config, r)));
+  const reporterConfigs = config.reporters.length ? config.reporters : ["default"];
+  const reporters = await Promise.all(reporterConfigs.map(async (r) => ({
+    label: reporterLabel(r),
+    reporter: await resolveReporter(config, r),
+  })));
   return {
     async onStart(fileCount, root) {
-      for (const reporter of reporters) await reporter.onStart?.(fileCount, root);
+      for (const { label, reporter } of reporters) await callReporter(label, "onStart", () => reporter.onStart?.(fileCount, root));
     },
     async onFileDone(file) {
-      for (const reporter of reporters) await reporter.onFileDone?.(file);
+      for (const { label, reporter } of reporters) await callReporter(label, "onFileDone", () => reporter.onFileDone?.(file));
     },
     async onFinished(files, summary) {
-      for (const reporter of reporters) await reporter.onFinished?.(files, summary);
+      for (const { label, reporter } of reporters) await callReporter(label, "onFinished", () => reporter.onFinished?.(files, summary));
     },
   };
+}
+
+async function callReporter(label: string, hook: keyof Reporter, callback: () => void | Promise<void>): Promise<void> {
+  try {
+    await callback();
+  } catch (error) {
+    console.error(`[lightning] reporter '${label}' ${hook} failed:`, error);
+  }
+}
+
+function reporterLabel(reporter: ReporterConfig): string {
+  return typeof reporter === "string" ? reporter : reporter.constructor?.name || "custom";
 }
 
 async function resolveReporter(config: ResolvedLightningConfig, reporter: ReporterConfig): Promise<Reporter> {

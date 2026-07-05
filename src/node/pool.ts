@@ -171,12 +171,23 @@ async function runInline(
         if (!sharedServer) await server?.close();
       }
       results.push(result);
-      await onFileDone(result);
+      await safeOnFileDone(onFileDone, result);
     }
   } finally {
     await sharedServer?.close();
   }
   return results;
+}
+
+async function safeOnFileDone(
+  onFileDone: (file: FileResult) => void | Promise<void>,
+  result: FileResult,
+): Promise<void> {
+  try {
+    await onFileDone(result);
+  } catch (error) {
+    console.error(`[lightning] onFileDone failed for ${result.filepath}:`, error);
+  }
 }
 
 export interface RunPoolOptions {
@@ -209,7 +220,7 @@ export async function runFilesInPool(
         (error) => errorFileResult(file, error),
       );
       results[index] = result;
-      await onFileDone(result);
+      await safeOnFileDone(onFileDone, result);
     }
   }
 
