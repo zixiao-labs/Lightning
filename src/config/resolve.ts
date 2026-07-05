@@ -11,8 +11,15 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createServer } from "@nasti-toolchain/nasti";
 import type {
+  CoverageOptions,
+  CoverageProvider,
+  CoverageReporter,
   LightningConfig,
+  ProjectConfig,
+  ReporterConfig,
   ResolvedLightningConfig,
+  ShardOptions,
+  TestEnvironment,
   TestOptions,
   TestPool,
 } from "../types.ts";
@@ -32,6 +39,14 @@ const DEFAULT_EXCLUDE = [
   "**/.git/**",
   "**/.nasti/**",
 ];
+const DEFAULT_COVERAGE_EXCLUDE = [
+  ...DEFAULT_EXCLUDE,
+  "**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}",
+  "**/__tests__/**",
+  "**/__fixtures__/**",
+  "**/coverage/**",
+];
+const DEFAULT_COVERAGE_INCLUDE = ["**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}"];
 
 /** CLI flags that override file/default config. */
 export interface ConfigOverrides {
@@ -48,6 +63,19 @@ export interface ConfigOverrides {
   repeats?: number;
   testTimeout?: number;
   update?: boolean;
+  environment?: TestEnvironment;
+  coverage?: boolean;
+  coverageProvider?: CoverageProvider;
+  coverageReporter?: CoverageReporter[];
+  coverageReportsDirectory?: string;
+  shard?: ShardOptions;
+  /** Internal: selected project when a worker resolves config from a projects array. */
+  projectIndex?: number;
+}
+
+interface LoadedConfig {
+  cwd: string;
+  config: LightningConfig;
 }
 
 function findConfigFile(root: string, explicit?: string): string | undefined {
@@ -91,6 +119,15 @@ async function loadConfigFile(
   }
 }
 
+async function loadConfig(overrides: ConfigOverrides): Promise<LoadedConfig> {
+  const cwd = path.resolve(overrides.root ?? process.cwd());
+  const configFile = findConfigFile(cwd, overrides.config);
+  return {
+    cwd,
+    config: configFile ? await loadConfigFile(cwd, configFile) : {},
+  };
+}
+
 function toRegExp(pattern: string | RegExp | undefined): RegExp | undefined {
   if (pattern === undefined) return undefined;
   if (pattern instanceof RegExp) return pattern;
@@ -106,6 +143,19 @@ function defaultMaxWorkers(): number {
 }
 
 const VALID_POOLS: readonly TestPool[] = ["threads", "forks", "inline"];
+const VALID_ENVIRONMENTS: readonly TestEnvironment[] = [
+  "node",
+  "jsdom",
+  "happy-dom",
+  "edge-runtime",
+];
+const VALID_COVERAGE_PROVIDERS: readonly CoverageProvider[] = ["v8"];
+const VALID_COVERAGE_REPORTERS: readonly CoverageReporter[] = [
+  "text",
+  "html",
+  "lcov",
+  "json",
+];
 
 function resolvePool(pool: TestPool | undefined): TestPool {
   const resolved = pool ?? "threads";
@@ -117,23 +167,122 @@ function resolvePool(pool: TestPool | undefined): TestPool {
   return resolved;
 }
 
-export async function resolveLightningConfig(
-  overrides: ConfigOverrides = {},
-): Promise<ResolvedLightningConfig> {
-  // Config discovery/loading uses the CLI root (or cwd); the file itself may then
-  // declare its own `root` for running tests.
-  const cwd = path.resolve(overrides.root ?? process.cwd());
-  const configFile = findConfigFile(cwd, overrides.config);
+function resolveEnvironment(environment: TestEnvironment | undefined): TestEnvironment {
+  const resolved = environment ?? "node";
+  if (!VALID_ENVIRONMENTS.includes(resolved)) {
+    throw new Error(
+      `Invalid environment: ${String(resolved)}. Expected one of ${VALID_ENVIRONMENTS.join(", ")}.`,
+    );
+  }
+  return resolved;
+}
 
-  let fileConfig: LightningConfig = {};
-  if (configFile) fileConfig = await loadConfigFile(cwd, configFile);
+function resolveShard(shard: ShardOptions | undefined): ShardOptions | undefined {
+  if (!shard) return undefined;
+  const { index, count } = shard;
+  if (
+    !Number.isInteger(index) ||
+    !Number.isInteger(count) ||
+    index < 1 ||
+    count < 1 ||
+    index > count
+  ) {
+    throw new Error(`Invalid shard: ${index}/${count}. Expected 1 <= index <= count.`);
+  }
+  return shard;
+}
 
-  const fileTest: TestOptions = fileConfig.test ?? {};
-  const { test: _omitTest, root: _omitRoot, ...nasti } = fileConfig;
+function resolveCoverage(
+  fileCoverage: CoverageOptions | undefined,
+  overrides: ConfigOverrides,
+): ResolvedLightningConfig["coverage"] {
+  const enabled = overrides.coverage ?? fileCoverage?.enabled ?? false;
+  const provider = overrides.coverageProvider ?? fileCoverage?.provider ?? "v8";
+  if (!VALID_COVERAGE_PROVIDERS.includes(provider)) {
+    throw new Error(
+      `Invalid coverage provider: ${String(provider)}. Expected one of ${VALID_COVERAGE_PROVIDERS.join(", ")}.`,
+    );
+  }
 
-  // Priority: CLI override ← file config ← cwd.
-  const root = path.resolve(overrides.root ?? fileConfig.root ?? process.cwd());
+  const reporter = overrides.coverageReporter ?? fileCoverage?.reporter ?? ["text"];
+  for (const r of reporter) {
+    if (!VALID_COVERAGE_REPORTERS.includes(r)) {
+      throw new Error(
+        `Invalid coverage reporter: ${String(r)}. Expected one of ${VALID_COVERAGE_REPORTERS.join(", ")}.`,
+      );
+    }
+  }
 
+  return {
+    enabled,
+    provider,
+    reporter,
+    reportsDirectory:
+      overrides.coverageReportsDirectory ?? fileCoverage?.reportsDirectory ?? "coverage",
+    include: fileCoverage?.include ?? DEFAULT_COVERAGE_INCLUDE,
+    exclude: fileCoverage?.exclude ?? DEFAULT_COVERAGE_EXCLUDE,
+    ...(fileCoverage?.thresholds ? { thresholds: fileCoverage.thresholds } : {}),
+  };
+}
+
+function mergeTestOptions(
+  base: TestOptions | undefined,
+  project: TestOptions | undefined,
+): TestOptions {
+  const thresholds = project?.coverage?.thresholds ?? base?.coverage?.thresholds;
+  return {
+    ...(base ?? {}),
+    ...(project ?? {}),
+    poolOptions: {
+      ...(base?.poolOptions ?? {}),
+      ...(project?.poolOptions ?? {}),
+    },
+    coverage: {
+      ...(base?.coverage ?? {}),
+      ...(project?.coverage ?? {}),
+      ...(thresholds ? { thresholds } : {}),
+    },
+  };
+}
+
+function resolveRoot(cwd: string, root: string | undefined): string {
+  if (!root) return cwd;
+  return path.isAbsolute(root) ? root : path.resolve(cwd, root);
+}
+
+function normalizeReporters(reporters: ReporterConfig[] | undefined): ReporterConfig[] {
+  return reporters && reporters.length > 0 ? reporters : ["default"];
+}
+
+function resolveOne(
+  loaded: LoadedConfig,
+  overrides: ConfigOverrides,
+  project: ProjectConfig | undefined,
+  projectIndex: number | undefined,
+): ResolvedLightningConfig {
+  const fileConfig = loaded.config;
+  const fileTest = mergeTestOptions(fileConfig.test, project?.test);
+
+  const {
+    test: _omitBaseTest,
+    root: _omitBaseRoot,
+    projects: _omitProjects,
+    ...baseNasti
+  } = fileConfig;
+  const {
+    test: _omitProjectTest,
+    root: _omitProjectRoot,
+    name: _omitProjectName,
+    ...projectNasti
+  } = project ?? {};
+
+  const configuredRoot = project?.root ?? fileConfig.root;
+  // `loaded.cwd` already includes a CLI --root override. Config roots remain relative
+  // to that discovery cwd; avoid resolving a relative --root twice.
+  const root = overrides.root ? loaded.cwd : resolveRoot(loaded.cwd, configuredRoot);
+
+  const coverage = resolveCoverage(fileTest.coverage, overrides);
+  const shard = resolveShard(overrides.shard ?? fileTest.shard);
   const namePattern = toRegExp(
     overrides.testNamePattern ?? fileTest.testNamePattern,
   );
@@ -144,7 +293,11 @@ export async function resolveLightningConfig(
       defaultMaxWorkers(),
   );
   const pool = resolvePool(overrides.pool ?? fileTest.pool);
-  const nastiPlugins = [createMockTransformPlugin(), ...(nasti.plugins ?? [])];
+  const nastiPlugins = [
+    createMockTransformPlugin(),
+    ...(baseNasti.plugins ?? []),
+    ...(projectNasti.plugins ?? []),
+  ];
 
   const resolved: ResolvedLightningConfig = {
     root,
@@ -154,7 +307,7 @@ export async function resolveLightningConfig(
     testTimeout: overrides.testTimeout ?? fileTest.testTimeout ?? 5000,
     reporters: overrides.reporter
       ? [overrides.reporter]
-      : (fileTest.reporters ?? ["default"]),
+      : normalizeReporters(fileTest.reporters),
     pool,
     poolOptions: { maxWorkers },
     isolate: overrides.isolate ?? fileTest.isolate ?? true,
@@ -162,13 +315,53 @@ export async function resolveLightningConfig(
     repeats: Math.max(1, overrides.repeats ?? fileTest.repeats ?? 1),
     updateSnapshots: overrides.update ?? fileTest.update ?? false,
     snapshotDir: fileTest.snapshotDir ?? "__snapshots__",
+    environment: resolveEnvironment(overrides.environment ?? fileTest.environment),
+    coverage,
+    ...(shard ? { shard } : {}),
+    ...(project?.name ? { projectName: project.name } : {}),
     nasti: {
-      ...nasti,
+      ...baseNasti,
+      ...projectNasti,
       plugins: nastiPlugins,
       root,
-      logLevel: overrides.silent ? "silent" : (nasti.logLevel ?? "silent"),
+      logLevel: overrides.silent
+        ? "silent"
+        : (projectNasti.logLevel ?? baseNasti.logLevel ?? "silent"),
     },
   };
   if (namePattern) resolved.testNamePattern = namePattern;
+  if (projectIndex !== undefined && !resolved.projectName) {
+    resolved.projectName = `project-${projectIndex + 1}`;
+  }
   return resolved;
+}
+
+export async function resolveLightningConfig(
+  overrides: ConfigOverrides = {},
+): Promise<ResolvedLightningConfig> {
+  const loaded = await loadConfig(overrides);
+  const projects = loaded.config.projects ?? [];
+  if (overrides.projectIndex !== undefined) {
+    const project = projects[overrides.projectIndex];
+    if (!project) {
+      throw new Error(`Project index out of range: ${overrides.projectIndex}`);
+    }
+    return resolveOne(loaded, overrides, project, overrides.projectIndex);
+  }
+  return resolveOne(loaded, overrides, undefined, undefined);
+}
+
+export async function resolveLightningConfigs(
+  overrides: ConfigOverrides = {},
+): Promise<Array<{ config: ResolvedLightningConfig; overrides: ConfigOverrides }>> {
+  const loaded = await loadConfig(overrides);
+  const projects = loaded.config.projects ?? [];
+  if (projects.length === 0) {
+    return [{ config: resolveOne(loaded, overrides, undefined, undefined), overrides }];
+  }
+
+  return projects.map((project, index) => ({
+    config: resolveOne(loaded, overrides, project, index),
+    overrides: { ...overrides, projectIndex: index },
+  }));
 }

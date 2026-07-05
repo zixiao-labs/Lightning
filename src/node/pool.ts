@@ -146,7 +146,7 @@ async function runInline(
   config: ResolvedLightningConfig,
   files: string[],
   hasGlobalOnly: boolean,
-  onFileDone: (file: FileResult) => void,
+  onFileDone: (file: FileResult) => void | Promise<void>,
 ): Promise<FileResult[]> {
   const results: FileResult[] = [];
   const sharedServer = config.isolate
@@ -165,11 +165,11 @@ async function runInline(
           hasGlobalOnly,
         });
         results.push(result);
-        onFileDone(result);
+        await onFileDone(result);
       } catch (error) {
         const result = errorFileResult(file, error);
         results.push(result);
-        onFileDone(result);
+        await onFileDone(result);
       } finally {
         if (!sharedServer) await server?.close();
       }
@@ -185,7 +185,7 @@ export interface RunPoolOptions {
   overrides: ConfigOverrides;
   files: string[];
   hasGlobalOnly: boolean;
-  onFileDone: (file: FileResult) => void;
+  onFileDone: (file: FileResult) => void | Promise<void>;
 }
 
 export async function runFilesInPool(
@@ -210,7 +210,7 @@ export async function runFilesInPool(
         (error) => errorFileResult(file, error),
       );
       results[index] = result;
-      onFileDone(result);
+      await onFileDone(result);
     }
   }
 
