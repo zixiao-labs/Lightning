@@ -77,9 +77,13 @@ function createJUnitReporter(config: ResolvedLightningConfig): Reporter {
   return {
     async onFinished(files, summary) {
       const tests = files.flatMap((file) => file.results.map((result) => ({ file, result })));
-      const cases = tests.map(({ file, result }) => junitCase(config, file, result)).join("\n");
-      const loadErrors = files.filter((file) => file.error).map((file) => junitLoadError(config, file)).join("\n");
-      const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<testsuites tests="${totalTests(summary)}" failures="${summary.failedTests + summary.failedFiles}" skipped="${summary.skippedTests + summary.todoTests}" time="${seconds(summary.durationMs)}">\n  <testsuite name="lightning" tests="${totalTests(summary)}" failures="${summary.failedTests + summary.failedFiles}" skipped="${summary.skippedTests + summary.todoTests}" time="${seconds(summary.durationMs)}">\n${cases}${loadErrors}\n  </testsuite>\n</testsuites>\n`;
+      const cases = tests.map(({ file, result }) => junitCase(config, file, result));
+      const loadErrors = files.filter((file) => file.error).map((file) => junitLoadError(config, file));
+      const entries = [...cases, ...loadErrors];
+      const testCount = entries.length;
+      const failureCount = tests.filter(({ result }) => result.state === "fail").length + loadErrors.length;
+      const skippedCount = tests.filter(({ result }) => result.state === "skip" || result.state === "todo").length;
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<testsuites tests="${testCount}" failures="${failureCount}" skipped="${skippedCount}" time="${seconds(summary.durationMs)}">\n  <testsuite name="lightning" tests="${testCount}" failures="${failureCount}" skipped="${skippedCount}" time="${seconds(summary.durationMs)}">\n${entries.join("\n")}\n  </testsuite>\n</testsuites>\n`;
       const dir = path.join(config.root, "test-results");
       await mkdir(dir, { recursive: true });
       await writeFile(path.join(dir, "junit.xml"), xml);
@@ -100,7 +104,7 @@ function createTapReporter(): Reporter {
       }
       for (const r of file.results) {
         index++;
-        const status = r.state === "pass" ? "ok" : "not ok";
+        const status = r.state === "pass" || r.state === "skip" ? "ok" : "not ok";
         const directive = r.state === "skip" ? " # SKIP" : r.state === "todo" ? " # TODO" : "";
         console.log(`${status} ${index} - ${escapeTap(r.fullName)}${directive}`);
         if (r.error) console.log(`  ---\n  message: ${JSON.stringify(r.error.message)}\n  ...`);
@@ -133,10 +137,6 @@ function junitCase(config: ResolvedLightningConfig, file: FileResult, result: Te
 function junitLoadError(config: ResolvedLightningConfig, file: FileResult): string {
   const classname = escapeXml(path.relative(config.root, file.filepath).split(path.sep).join("/"));
   return `    <testcase classname="${classname}" name="load error" time="${seconds(file.durationMs)}">\n      <failure message="${escapeXml(file.error?.message ?? "Load error")}">${escapeXml(file.error?.stack ?? file.error?.message ?? "")}</failure>\n    </testcase>`;
-}
-
-function totalTests(summary: RunSummary): number {
-  return summary.passedTests + summary.failedTests + summary.skippedTests + summary.todoTests;
 }
 
 function seconds(ms: number): string { return (ms / 1000).toFixed(3); }

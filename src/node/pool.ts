@@ -156,23 +156,22 @@ async function runInline(
     for (const file of files) {
       let server: Awaited<ReturnType<typeof createServer>> | undefined =
         sharedServer;
+      let result: FileResult;
       try {
         server ??= await createServer(config.nasti);
-        const result = await runTestFile({
+        result = await runTestFile({
           config,
           file,
           server,
           hasGlobalOnly,
         });
-        results.push(result);
-        await onFileDone(result);
       } catch (error) {
-        const result = errorFileResult(file, error);
-        results.push(result);
-        await onFileDone(result);
+        result = errorFileResult(file, error);
       } finally {
         if (!sharedServer) await server?.close();
       }
+      results.push(result);
+      await onFileDone(result);
     }
   } finally {
     await sharedServer?.close();

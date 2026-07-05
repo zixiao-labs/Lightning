@@ -13,6 +13,7 @@ import { createServer } from "@nasti-toolchain/nasti";
 import type {
   CoverageOptions,
   CoverageProvider,
+  CoverageThresholds,
   CoverageReporter,
   LightningConfig,
   ProjectConfig,
@@ -192,6 +193,22 @@ function resolveShard(shard: ShardOptions | undefined): ShardOptions | undefined
   return shard;
 }
 
+function resolveCoverageThresholds(
+  thresholds: CoverageThresholds | undefined,
+): CoverageThresholds | undefined {
+  if (!thresholds) return undefined;
+  for (const key of ["lines", "functions", "statements", "branches"] as const) {
+    const value = thresholds[key];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) {
+      throw new Error(
+        `Invalid coverage threshold for ${key}: ${String(value)}. Expected a finite number between 0 and 100.`,
+      );
+    }
+  }
+  return thresholds;
+}
+
 function resolveCoverage(
   fileCoverage: CoverageOptions | undefined,
   overrides: ConfigOverrides,
@@ -213,6 +230,8 @@ function resolveCoverage(
     }
   }
 
+  const thresholds = resolveCoverageThresholds(fileCoverage?.thresholds);
+
   return {
     enabled,
     provider,
@@ -221,7 +240,7 @@ function resolveCoverage(
       overrides.coverageReportsDirectory ?? fileCoverage?.reportsDirectory ?? "coverage",
     include: fileCoverage?.include ?? DEFAULT_COVERAGE_INCLUDE,
     exclude: fileCoverage?.exclude ?? DEFAULT_COVERAGE_EXCLUDE,
-    ...(fileCoverage?.thresholds ? { thresholds: fileCoverage.thresholds } : {}),
+    ...(thresholds ? { thresholds } : {}),
   };
 }
 
@@ -277,9 +296,9 @@ function resolveOne(
   } = project ?? {};
 
   const configuredRoot = project?.root ?? fileConfig.root;
-  // `loaded.cwd` already includes a CLI --root override. Config roots remain relative
-  // to that discovery cwd; avoid resolving a relative --root twice.
-  const root = overrides.root ? loaded.cwd : resolveRoot(loaded.cwd, configuredRoot);
+  // `loaded.cwd` is process.cwd() or CLI --root. Config/project roots still apply
+  // relative to that discovery base so multi-project roots remain distinct.
+  const root = resolveRoot(loaded.cwd, configuredRoot);
 
   const coverage = resolveCoverage(fileTest.coverage, overrides);
   const shard = resolveShard(overrides.shard ?? fileTest.shard);

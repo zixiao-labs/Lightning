@@ -19,7 +19,7 @@ Lightning is a Next Generation Testing Framework for Frontend and Nodejs backend
 - Filtering, timeouts, concurrent for suite and tests
 - Projects support
 - Snapshot testing
-- Code coverage via v8-coverage
+- Code coverage via v8-coverage (statement/branch percentages are line-based approximations)
 - Test retries and test isolation
 - Wuling DevOps Test Plan deep integration(planned)
 - happy-dom or jsdom for DOM mocking

@@ -2,8 +2,8 @@
 /.idea
 /dist
 /build
-/coverage
-/test-results
+coverage/
+test-results/
 /.vscode
 .DS_Store
 *.log

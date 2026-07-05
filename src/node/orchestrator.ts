@@ -96,7 +96,6 @@ async function runSingleConfig(
   });
 
   let summary = createRunSummary(fileResults, performance.now() - start);
-  await reporter.onFinished(fileResults, summary);
 
   if (config.coverage.enabled) {
     const scripts = fileResults.flatMap((file) => file.coverage ?? []);
@@ -106,6 +105,7 @@ async function runSingleConfig(
     }
   }
 
+  await reporter.onFinished(fileResults, summary);
   return { summary, files: fileResults };
 }
 

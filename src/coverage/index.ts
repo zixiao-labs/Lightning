@@ -12,9 +12,13 @@ interface FileCoverage {
   file: string;
   lines: { total: number; covered: number; details: Array<{ line: number; hits: number; text: string }> };
   functions: { total: number; covered: number };
+  // V8 coverage here does not expose Istanbul statement/branch maps, so these
+  // metrics are line-based approximations derived from covered V8 ranges.
   statements: { total: number; covered: number };
   branches: { total: number; covered: number };
 }
+const APPROXIMATE_COVERAGE_NOTE =
+  "Branch and statement coverage are line-based approximations from V8 coverage ranges.";
 export interface PercentMetric { total: number; covered: number; pct: number }
 export interface CoverageSummary {
   lines: PercentMetric;
@@ -161,13 +165,19 @@ function summarize(files: FileCoverage[]): CoverageSummary {
   return { lines: sum("lines"), functions: sum("functions"), statements: sum("statements"), branches: sum("branches") };
 }
 
+function coverageMetricLabel(key: "lines" | "functions" | "statements" | "branches"): string {
+  return key === "statements" || key === "branches"
+    ? `${key} (line-based approximation)`
+    : key;
+}
+
 function thresholdErrors(summary: CoverageSummary, thresholds?: CoverageThresholds): string[] {
   if (!thresholds) return [];
   const out: string[] = [];
   for (const key of ["lines", "functions", "statements", "branches"] as const) {
     const expected = thresholds[key];
     if (expected !== undefined && summary[key].pct < expected) {
-      out.push(`Coverage for ${key} (${summary[key].pct}%) does not meet threshold (${expected}%)`);
+      out.push(`Coverage for ${coverageMetricLabel(key)} (${summary[key].pct}%) does not meet threshold (${expected}%)`);
     }
   }
   return out;
@@ -178,11 +188,12 @@ function rel(root: string, file: string): string {
 }
 
 function table(config: ResolvedLightningConfig, files: FileCoverage[], summary: CoverageSummary): string {
-  const rows = [["File", "% Lines", "% Funcs", "% Branch", "% Stmts"]];
+  const rows = [["File", "% Lines", "% Funcs", "% Branch*", "% Stmts*"]];
   for (const f of files) rows.push([rel(config.root, f.file), String(pct(f.lines.covered, f.lines.total).pct), String(pct(f.functions.covered, f.functions.total).pct), String(pct(f.branches.covered, f.branches.total).pct), String(pct(f.statements.covered, f.statements.total).pct)]);
   rows.push(["All files", String(summary.lines.pct), String(summary.functions.pct), String(summary.branches.pct), String(summary.statements.pct)]);
   const widths = rows[0]!.map((_, i) => Math.max(...rows.map((r) => r[i]?.length ?? 0)));
-  return rows.map((r, index) => r.map((cell, i) => cell.padEnd(widths[i] ?? 0)).join(" | ") + (index === 0 ? `\n${widths.map((w) => "-".repeat(w)).join("-|-")}` : "")).join("\n");
+  const rendered = rows.map((r, index) => r.map((cell, i) => cell.padEnd(widths[i] ?? 0)).join(" | ") + (index === 0 ? `\n${widths.map((w) => "-".repeat(w)).join("-|-")}` : "")).join("\n");
+  return `${rendered}\n* ${APPROXIMATE_COVERAGE_NOTE}`;
 }
 
 async function writeJson(dir: string, result: CoverageReportResult): Promise<void> {
@@ -193,7 +204,7 @@ async function writeJson(dir: string, result: CoverageReportResult): Promise<voi
 async function writeHtml(config: ResolvedLightningConfig, dir: string, result: CoverageReportResult): Promise<void> {
   await mkdir(dir, { recursive: true });
   const rows = result.files.map((f) => `<tr><td>${escapeHtml(rel(config.root, f.file))}</td><td>${pct(f.lines.covered, f.lines.total).pct}%</td><td>${pct(f.functions.covered, f.functions.total).pct}%</td><td>${pct(f.branches.covered, f.branches.total).pct}%</td><td>${pct(f.statements.covered, f.statements.total).pct}%</td></tr>`).join("\n");
-  await writeFile(path.join(dir, "index.html"), `<!doctype html><meta charset="utf-8"><title>Lightning Coverage</title><style>body{font-family:ui-sans-serif,system-ui;margin:2rem}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:.35rem .6rem}th{background:#f6f8fa}</style><h1>Lightning Coverage</h1><p>Lines: ${result.summary.lines.pct}%</p><table><thead><tr><th>File</th><th>Lines</th><th>Functions</th><th>Branches</th><th>Statements</th></tr></thead><tbody>${rows}</tbody></table>`);
+  await writeFile(path.join(dir, "index.html"), `<!doctype html><meta charset="utf-8"><title>Lightning Coverage</title><style>body{font-family:ui-sans-serif,system-ui;margin:2rem}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:.35rem .6rem}th{background:#f6f8fa}</style><h1>Lightning Coverage</h1><p>Lines: ${result.summary.lines.pct}%</p><table><thead><tr><th>File</th><th>Lines</th><th>Functions</th><th>Branches*</th><th>Statements*</th></tr></thead><tbody>${rows}</tbody></table><p><small>* ${escapeHtml(APPROXIMATE_COVERAGE_NOTE)}</small></p>`);
 }
 
 async function writeLcov(config: ResolvedLightningConfig, dir: string, files: FileCoverage[]): Promise<void> {
@@ -210,7 +221,19 @@ async function writeLcov(config: ResolvedLightningConfig, dir: string, files: Fi
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" })[ch] ?? ch);
+  return value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[ch] ?? ch);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function tryWriteReport(name: string, dir: string, write: () => Promise<void>): Promise<void> {
+  try {
+    await write();
+  } catch (error) {
+    console.warn(c.yellow(`Warning: failed to write ${name} coverage report to ${dir}: ${errorMessage(error)}`));
+  }
 }
 
 export async function createCoverageReport(config: ResolvedLightningConfig, scripts: V8Script[]): Promise<CoverageReportResult> {
@@ -222,9 +245,9 @@ export async function createCoverageReport(config: ResolvedLightningConfig, scri
   const result = { files, summary, thresholdErrors: thresholdErrors(summary, config.coverage.thresholds) };
   const outDir = path.resolve(config.root, config.coverage.reportsDirectory);
   if (config.coverage.reporter.includes("text")) console.log(`\n${c.bold("Coverage report")}\n${table(config, files, summary)}\n`);
-  if (config.coverage.reporter.includes("json")) await writeJson(outDir, result);
-  if (config.coverage.reporter.includes("html")) await writeHtml(config, outDir, result);
-  if (config.coverage.reporter.includes("lcov")) await writeLcov(config, outDir, files);
+  if (config.coverage.reporter.includes("json")) await tryWriteReport("json", outDir, () => writeJson(outDir, result));
+  if (config.coverage.reporter.includes("html")) await tryWriteReport("html", outDir, () => writeHtml(config, outDir, result));
+  if (config.coverage.reporter.includes("lcov")) await tryWriteReport("lcov", outDir, () => writeLcov(config, outDir, files));
   for (const error of result.thresholdErrors) console.error(c.red(error));
   return result;
 }

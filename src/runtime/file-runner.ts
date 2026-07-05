@@ -72,7 +72,7 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
       onTestStart: (name) => setCurrentSnapshotTest(name),
       onTestEnd: () => setCurrentSnapshotTest(undefined),
     });
-    const coverageScripts = await stopCoverage();
+    const coverageScripts = await stopCoverage().catch(() => undefined);
     return {
       filepath: file,
       results,

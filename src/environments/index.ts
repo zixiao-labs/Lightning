@@ -8,6 +8,19 @@ export interface EnvironmentInstance {
 
 const DOCBLOCK_RE = /@lightning-environment\s+([^\s*]+)/;
 
+class InvalidEnvironmentError extends Error {
+  readonly code = "ERR_LIGHTNING_INVALID_ENVIRONMENT";
+}
+
+function isInvalidEnvironmentError(error: unknown): error is InvalidEnvironmentError {
+  return error instanceof InvalidEnvironmentError || (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "ERR_LIGHTNING_INVALID_ENVIRONMENT"
+  );
+}
+
 function defineGlobal(key: string, value: unknown): void {
   Object.defineProperty(globalThis, key, {
     configurable: true,
@@ -137,6 +150,9 @@ function setupNode(): EnvironmentInstance {
 }
 
 function setupEdgeRuntime(): EnvironmentInstance {
+  // Lightweight edge compatibility, not a sandbox: Node-specific globals such as
+  // process, Buffer, require, module, and __dirname are not hidden. This only
+  // ensures common Web-standard APIs are present on globalThis/self.
   const patcher = createGlobalPatcher();
   patcher.set("self", globalThis);
   const webKeys = [
@@ -183,10 +199,10 @@ export async function resolveFileEnvironment(
     if (match?.[1]) {
       const value = match[1] as TestEnvironment;
       if (["node", "jsdom", "happy-dom", "edge-runtime"].includes(value)) return value;
-      throw new Error(`Invalid @lightning-environment '${match[1]}' in ${file}`);
+      throw new InvalidEnvironmentError(`Invalid @lightning-environment '${match[1]}' in ${file}`);
     }
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith("Invalid @lightning-environment")) throw error;
+    if (isInvalidEnvironmentError(error)) throw error;
     // Ignore read errors here; importing the file will surface them as the real failure.
   }
   return config.environment;
