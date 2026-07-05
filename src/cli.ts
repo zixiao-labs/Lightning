@@ -13,7 +13,7 @@ import c from "tinyrainbow";
 import { runTests } from "./node/orchestrator.ts";
 import { watchTests } from "./node/watch.ts";
 import type { ConfigOverrides } from "./config/resolve.ts";
-import type { TestPool } from "./types.ts";
+import type { CoverageProvider, CoverageReporter, TestEnvironment, TestPool } from "./types.ts";
 
 function readVersion(): string {
   try {
@@ -37,10 +37,16 @@ interface CliFlags {
   pool?: TestPool;
   maxWorkers?: string | number;
   isolate?: boolean;
+  environment?: TestEnvironment;
   retry?: string | number;
   repeats?: string | number;
   testTimeout?: string | number;
   update?: boolean;
+  coverage?: boolean;
+  coverageProvider?: CoverageProvider;
+  coverageReporter?: string | string[];
+  coverageReportsDirectory?: string;
+  shard?: string;
   watch?: boolean;
   clearScreen?: boolean;
 }
@@ -57,7 +63,27 @@ function toNumber(
   return parsed;
 }
 
-function toOverrides(flags: CliFlags): ConfigOverrides {
+function toStringArray(value: string | string[] | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  const values = Array.isArray(value) ? value : [value];
+  return values.flatMap((item) =>
+    item.split(",").map((v) => v.trim()).filter(Boolean),
+  );
+}
+
+function parseShard(value: string | undefined): ConfigOverrides["shard"] {
+  if (value === undefined) return undefined;
+  const match = /^(\d+)\/(\d+)$/.exec(value.trim());
+  if (!match) throw new Error(`Invalid --shard: ${value} (expected N/M, e.g. 1/4)`);
+  const index = Number(match[1]);
+  const count = Number(match[2]);
+  if (!Number.isInteger(index) || !Number.isInteger(count) || index < 1 || count < 1 || index > count) {
+    throw new Error(`Invalid --shard: ${value} (expected 1 <= N <= M)`);
+  }
+  return { index, count };
+}
+
+function toOverrides(flags: CliFlags, includeRunOnly = true): ConfigOverrides {
   const o: ConfigOverrides = {};
   if (flags.root !== undefined) o.root = flags.root;
   if (flags.config !== undefined) o.config = flags.config;
@@ -74,6 +100,7 @@ function toOverrides(flags: CliFlags): ConfigOverrides {
   const maxWorkers = toNumber(flags.maxWorkers, "--maxWorkers");
   if (maxWorkers !== undefined) o.maxWorkers = maxWorkers;
   if (flags.isolate !== undefined) o.isolate = flags.isolate;
+  if (flags.environment !== undefined) o.environment = flags.environment;
   const retry = toNumber(flags.retry, "--retry");
   if (retry !== undefined) o.retry = retry;
   const repeats = toNumber(flags.repeats, "--repeats");
@@ -81,7 +108,21 @@ function toOverrides(flags: CliFlags): ConfigOverrides {
   const testTimeout = toNumber(flags.testTimeout, "--test-timeout");
   if (testTimeout !== undefined) o.testTimeout = testTimeout;
   if (flags.update !== undefined) o.update = flags.update;
+  if (includeRunOnly) {
+    if (flags.coverage !== undefined) o.coverage = flags.coverage;
+    if (flags.coverageProvider !== undefined) o.coverageProvider = flags.coverageProvider;
+    const coverageReporter = toStringArray(flags.coverageReporter) as CoverageReporter[] | undefined;
+    if (coverageReporter !== undefined) o.coverageReporter = coverageReporter;
+    if (flags.coverageReportsDirectory !== undefined)
+      o.coverageReportsDirectory = flags.coverageReportsDirectory;
+    const shard = parseShard(flags.shard);
+    if (shard) o.shard = shard;
+  }
   return o;
+}
+
+function toWatchOverrides(flags: CliFlags): ConfigOverrides {
+  return { ...toOverrides(flags, false), coverage: false };
 }
 
 async function run(filters: string[], flags: CliFlags): Promise<void> {
@@ -101,7 +142,7 @@ async function run(filters: string[], flags: CliFlags): Promise<void> {
 async function watch(filters: string[], flags: CliFlags): Promise<void> {
   try {
     await watchTests({
-      overrides: toOverrides(flags),
+      overrides: toWatchOverrides(flags),
       fileFilters: filters,
       // cac defaults clearScreen to true and sets it false on --no-clearScreen.
       // The spread keeps the key off entirely when somehow unset (exactOptional).
@@ -128,8 +169,7 @@ function shouldWatch(flags: CliFlags): boolean {
 
 const cli = cac("lightning");
 
-// Shared flag definitions (kept identical across the default + `run` commands).
-function withFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
+function withBaseFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
   return cmd
     .option("-r, --root <path>", "Project root directory")
     .option("-c, --config <path>", "Path to a config file")
@@ -146,20 +186,43 @@ function withFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
     )
     .option("--isolate", "Run each test file in an isolated worker")
     .option("--no-isolate", "Disable file-level worker isolation")
+    .option("--environment <name>", "Test environment: node, jsdom, happy-dom, or edge-runtime")
     .option("--retry <number>", "Retry failing tests this many times")
     .option("--repeats <number>", "Repeat each test this many times")
     .option("--test-timeout <ms>", "Default per-test timeout in milliseconds")
     .option("-u, --update", "Update snapshots")
-    .option("-w, --watch", "Rerun tests on file change (default in a TTY; use --no-watch to disable)")
-    .option("--no-clearScreen", "Keep the terminal scrollback between reruns")
     .option("--silent", "Silence Nasti server output") as T;
+}
+
+function withRunOnlyFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
+  return cmd
+    .option("--coverage", "Enable coverage collection")
+    .option("--coverage-provider <provider>", "Coverage provider: v8")
+    .option("--coverage-reporter <reporter>", "Coverage reporter(s): text, html, lcov, json")
+    .option("--coverage-reports-directory <dir>", "Coverage output directory")
+    .option("--shard <shard>", "Run a CI shard, e.g. 1/4") as T;
+}
+
+function withWatchFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
+  return cmd
+    .option("-w, --watch", "Rerun tests on file change (default in a TTY; use --no-watch to disable)")
+    .option("--no-clearScreen", "Keep the terminal scrollback between reruns") as T;
+}
+
+// Shared flag definitions (kept identical across the default + `run` commands).
+function withFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
+  return withWatchFlags(withRunOnlyFlags(withBaseFlags(cmd)));
+}
+
+function withWatchCommandFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
+  return withWatchFlags(withBaseFlags(cmd));
 }
 
 withFlags(cli.command("run [...filters]", "Run tests once and exit")).action(
   (filters: string[], flags: CliFlags) => run(filters, flags),
 );
 
-withFlags(
+withWatchCommandFlags(
   cli.command("watch [...filters]", "Rerun affected tests on file change"),
 ).action((filters: string[], flags: CliFlags) => watch(filters, flags));
 

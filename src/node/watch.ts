@@ -40,7 +40,9 @@ import type { FileResult, ResolvedLightningConfig } from "../types.ts";
 import { readFile } from "node:fs/promises";
 import { resolveLightningConfig, type ConfigOverrides } from "../config/resolve.ts";
 import { runTestFile } from "../runtime/file-runner.ts";
-import { createDefaultReporter, type Reporter } from "../reporters/default.ts";
+import { createDefaultReporter } from "../reporters/default.ts";
+import { createRunSummary } from "../reporters/summary.ts";
+import type { Reporter } from "../types.ts";
 import { DependencyGraph, createDepTrackerPlugin } from "./dep-graph.ts";
 import { normalizePath } from "./path-utils.ts";
 
@@ -177,7 +179,7 @@ export async function watchTests(options: WatchOptions): Promise<void> {
     // failures and anchors its clock at construction time).
     const reporter: Reporter = createDefaultReporter({ root: config.root });
     if (clearOnRerun) clearScreen();
-    reporter.onStart(files.length, config.root);
+    await reporter.onStart?.(files.length, config.root);
 
     const failed = new Set<string>();
     const fileResults: FileResult[] = [];
@@ -200,10 +202,13 @@ export async function watchTests(options: WatchOptions): Promise<void> {
       const isFail = Boolean(result.error) || result.results.some((r) => r.state === "fail");
       if (isFail) failed.add(file);
       fileResults.push(result);
-      reporter.onFileDone(result);
+      await reporter.onFileDone?.(result);
     }
     failedFiles = failed;
-    reporter.onFinished(fileResults);
+    await reporter.onFinished?.(
+      fileResults,
+      createRunSummary(fileResults, fileResults.reduce((total, file) => total + file.durationMs, 0)),
+    );
   }
 
   /** Execute a rerun request, guarding against re-entrancy. */

@@ -146,7 +146,7 @@ async function runInline(
   config: ResolvedLightningConfig,
   files: string[],
   hasGlobalOnly: boolean,
-  onFileDone: (file: FileResult) => void,
+  onFileDone: (file: FileResult) => void | Promise<void>,
 ): Promise<FileResult[]> {
   const results: FileResult[] = [];
   const sharedServer = config.isolate
@@ -156,23 +156,22 @@ async function runInline(
     for (const file of files) {
       let server: Awaited<ReturnType<typeof createServer>> | undefined =
         sharedServer;
+      let result: FileResult;
       try {
         server ??= await createServer(config.nasti);
-        const result = await runTestFile({
+        result = await runTestFile({
           config,
           file,
           server,
           hasGlobalOnly,
         });
-        results.push(result);
-        onFileDone(result);
       } catch (error) {
-        const result = errorFileResult(file, error);
-        results.push(result);
-        onFileDone(result);
+        result = errorFileResult(file, error);
       } finally {
         if (!sharedServer) await server?.close();
       }
+      results.push(result);
+      await safeOnFileDone(onFileDone, result);
     }
   } finally {
     await sharedServer?.close();
@@ -180,12 +179,23 @@ async function runInline(
   return results;
 }
 
+async function safeOnFileDone(
+  onFileDone: (file: FileResult) => void | Promise<void>,
+  result: FileResult,
+): Promise<void> {
+  try {
+    await onFileDone(result);
+  } catch (error) {
+    console.error(`[lightning] onFileDone failed for ${result.filepath}:`, error);
+  }
+}
+
 export interface RunPoolOptions {
   config: ResolvedLightningConfig;
   overrides: ConfigOverrides;
   files: string[];
   hasGlobalOnly: boolean;
-  onFileDone: (file: FileResult) => void;
+  onFileDone: (file: FileResult) => void | Promise<void>;
 }
 
 export async function runFilesInPool(
@@ -210,7 +220,7 @@ export async function runFilesInPool(
         (error) => errorFileResult(file, error),
       );
       results[index] = result;
-      onFileDone(result);
+      await safeOnFileDone(onFileDone, result);
     }
   }
 

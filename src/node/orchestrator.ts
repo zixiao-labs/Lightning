@@ -5,17 +5,16 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { glob } from "tinyglobby";
-import type { FileResult, ResolvedLightningConfig } from "../types.ts";
+import type { FileResult, ResolvedLightningConfig, RunSummary } from "../types.ts";
 import {
-  resolveLightningConfig,
+  resolveLightningConfigs,
   type ConfigOverrides,
 } from "../config/resolve.ts";
-import {
-  createDefaultReporter,
-  type Reporter,
-  type RunSummary,
-} from "../reporters/default.ts";
+import { createCoverageReport } from "../coverage/index.ts";
+import { createReporterManager } from "../reporters/index.ts";
+import { createRunSummary } from "../reporters/summary.ts";
 import { runFilesInPool } from "./pool.ts";
+import { applyShard } from "./sharding.ts";
 
 async function discover(
   config: ResolvedLightningConfig,
@@ -52,28 +51,41 @@ export interface RunResult {
   files: FileResult[];
 }
 
-/** Build the reporter from the resolved config. Phase 2 still ships only `default`. */
-function createReporter(config: ResolvedLightningConfig): Reporter {
-  const ids = config.reporters.length > 0 ? config.reporters : ["default"];
-  const unknown = ids.filter((id) => id !== "default");
-  if (unknown.length > 0) {
-    throw new Error(
-      `Unknown reporter(s): ${unknown.join(", ")}. Lightning currently ships only "default".`,
-    );
-  }
-  return createDefaultReporter({ root: config.root });
+function mergeSummaries(summaries: RunSummary[]): RunSummary {
+  return summaries.reduce<RunSummary>(
+    (acc, summary) => ({
+      totalFiles: acc.totalFiles + summary.totalFiles,
+      failedFiles: acc.failedFiles + summary.failedFiles,
+      passedTests: acc.passedTests + summary.passedTests,
+      failedTests: acc.failedTests + summary.failedTests,
+      skippedTests: acc.skippedTests + summary.skippedTests,
+      todoTests: acc.todoTests + summary.todoTests,
+      durationMs: acc.durationMs + summary.durationMs,
+    }),
+    {
+      totalFiles: 0,
+      failedFiles: 0,
+      passedTests: 0,
+      failedTests: 0,
+      skippedTests: 0,
+      todoTests: 0,
+      durationMs: 0,
+    },
+  );
 }
 
-export async function runTests(
-  overrides: ConfigOverrides = {},
-  fileFilters: string[] = [],
+async function runSingleConfig(
+  config: ResolvedLightningConfig,
+  overrides: ConfigOverrides,
+  fileFilters: string[],
 ): Promise<RunResult> {
-  const config = await resolveLightningConfig(overrides);
-  const reporter = createReporter(config);
-  const files = await discover(config, fileFilters);
+  const reporter = await createReporterManager(config);
+  const discovered = await discover(config, fileFilters);
+  const files = applyShard(discovered, config.shard);
   const hasGlobalOnly = await detectGlobalOnly(files);
+  const start = performance.now();
 
-  reporter.onStart(files.length, config.root);
+  await reporter.onStart(files.length, config.root);
 
   const fileResults = await runFilesInPool({
     config,
@@ -83,6 +95,31 @@ export async function runTests(
     onFileDone: (file) => reporter.onFileDone(file),
   });
 
-  const summary = reporter.onFinished(fileResults);
+  let summary = createRunSummary(fileResults, performance.now() - start);
+
+  if (config.coverage.enabled) {
+    const scripts = fileResults.flatMap((file) => file.coverage ?? []);
+    const report = await createCoverageReport(config, scripts);
+    if (report.thresholdErrors.length > 0) {
+      summary = { ...summary, failedFiles: Math.max(summary.failedFiles, 1) };
+    }
+  }
+
+  await reporter.onFinished(fileResults, summary);
   return { summary, files: fileResults };
+}
+
+export async function runTests(
+  overrides: ConfigOverrides = {},
+  fileFilters: string[] = [],
+): Promise<RunResult> {
+  const entries = await resolveLightningConfigs(overrides);
+  const results: RunResult[] = [];
+  for (const entry of entries) {
+    results.push(await runSingleConfig(entry.config, entry.overrides, fileFilters));
+  }
+  return {
+    summary: mergeSummaries(results.map((result) => result.summary)),
+    files: results.flatMap((result) => result.files),
+  };
 }

@@ -10,6 +10,9 @@ import {
   setCurrentSnapshotTest,
   startSnapshotFile,
 } from "../snapshot/index.ts";
+import { CoverageSession } from "../coverage/index.ts";
+import { resolveFileEnvironment, setupEnvironment } from "../environments/index.ts";
+import type { V8CoverageScript } from "../types.ts";
 
 type DevServer = Awaited<ReturnType<typeof createServer>>;
 
@@ -32,17 +35,32 @@ export interface RunTestFileOptions {
 export async function runTestFile(options: RunTestFileOptions): Promise<FileResult> {
   const { config, file, server, hasGlobalOnly } = options;
   const start = performance.now();
+  const environment = await resolveFileEnvironment(config, file);
+  let env: Awaited<ReturnType<typeof setupEnvironment>> | undefined;
+  let coverage: CoverageSession | undefined;
 
-  if (config.globals) installGlobals();
-
-  startCollection();
-  startSnapshotFile({
-    testFile: file,
-    snapshotDir: config.snapshotDir,
-    update: config.updateSnapshots,
-  });
+  async function stopCoverage(): Promise<V8CoverageScript[] | undefined> {
+    if (!coverage) return undefined;
+    const current = coverage;
+    coverage = undefined;
+    return current.stop();
+  }
 
   try {
+    env = await setupEnvironment(environment);
+    if (config.coverage.enabled) {
+      coverage = new CoverageSession();
+      await coverage.start();
+    }
+    if (config.globals) installGlobals();
+
+    startCollection();
+    startSnapshotFile({
+      testFile: file,
+      snapshotDir: config.snapshotDir,
+      update: config.updateSnapshots,
+    });
+
     await server.ssrLoadModule(fileToUrl(config.root, file));
     const { root, hasOnly } = finishCollection();
     const results = await runSuiteTree(root, {
@@ -54,16 +72,30 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
       onTestStart: (name) => setCurrentSnapshotTest(name),
       onTestEnd: () => setCurrentSnapshotTest(undefined),
     });
-    return { filepath: file, results, durationMs: performance.now() - start };
+    const coverageScripts = await stopCoverage().catch(() => undefined);
+    return {
+      filepath: file,
+      results,
+      durationMs: performance.now() - start,
+      environment,
+      ...(config.projectName ? { projectName: config.projectName } : {}),
+      ...(coverageScripts ? { coverage: coverageScripts } : {}),
+    };
   } catch (err) {
+    const coverageScripts = await stopCoverage().catch(() => undefined);
     return {
       filepath: file,
       results: [],
       error: toError(err),
       durationMs: performance.now() - start,
+      environment,
+      ...(config.projectName ? { projectName: config.projectName } : {}),
+      ...(coverageScripts ? { coverage: coverageScripts } : {}),
     };
   } finally {
+    await stopCoverage().catch(() => undefined);
     finishSnapshotFile();
     cleanupViState();
+    await env?.teardown();
   }
 }
