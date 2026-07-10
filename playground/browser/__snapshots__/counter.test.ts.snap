@@ -1,0 +1,4 @@
+// Lightning Snapshot v1
+{
+  "counter component > markup matches its snapshot 1": "<div class=\"counter\"><output data-testid=\"count\">0</output><button data-testid=\"increment\" type=\"button\">+1</button><button data-testid=\"reset\" type=\"button\">reset</button><input data-testid=\"step-input\" type=\"text\"></div>"
+}

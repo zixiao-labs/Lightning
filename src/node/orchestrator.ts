@@ -13,6 +13,7 @@ import {
 import { createCoverageReport } from "../coverage/index.ts";
 import { createReporterManager } from "../reporters/index.ts";
 import { createRunSummary } from "../reporters/summary.ts";
+import { runFilesInBrowser } from "../browser/pool.ts";
 import { runFilesInPool } from "./pool.ts";
 import { applyShard } from "./sharding.ts";
 
@@ -87,17 +88,16 @@ async function runSingleConfig(
 
   await reporter.onStart(files.length, config.root);
 
-  const fileResults = await runFilesInPool({
-    config,
-    overrides,
-    files,
-    hasGlobalOnly,
-    onFileDone: (file) => reporter.onFileDone(file),
-  });
+  const onFileDone = (file: FileResult) => reporter.onFileDone(file);
+  const fileResults = config.browser.enabled
+    ? await runFilesInBrowser({ config, files, hasGlobalOnly, onFileDone })
+    : await runFilesInPool({ config, overrides, files, hasGlobalOnly, onFileDone });
 
   let summary = createRunSummary(fileResults, performance.now() - start);
 
-  if (config.coverage.enabled) {
+  // Browser mode collects no V8 scripts (see pool warning); an empty report
+  // would only trip thresholds spuriously.
+  if (config.coverage.enabled && !config.browser.enabled) {
     const scripts = fileResults.flatMap((file) => file.coverage ?? []);
     const report = await createCoverageReport(config, scripts);
     if (report.thresholdErrors.length > 0) {

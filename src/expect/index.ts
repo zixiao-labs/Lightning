@@ -1,11 +1,11 @@
-import { inspect } from "node:util";
+import { inspect } from "../utils/inspect.ts";
 import { isMockFunction } from "../mock/index.ts";
 import {
   addSnapshotSerializer,
   matchSnapshot,
   serializeSnapshot,
   type SnapshotSerializer,
-} from "../snapshot/index.ts";
+} from "../snapshot/core.ts";
 
 export class LightningAssertionError extends Error {
   diff?: { actual: unknown; expected: unknown };

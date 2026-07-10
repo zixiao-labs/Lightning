@@ -40,6 +40,7 @@ import type { FileResult, ResolvedLightningConfig } from "../types.ts";
 import { readFile } from "node:fs/promises";
 import { resolveLightningConfig, type ConfigOverrides } from "../config/resolve.ts";
 import { runTestFile } from "../runtime/file-runner.ts";
+import { runTests } from "./orchestrator.ts";
 import { createDefaultReporter } from "../reporters/default.ts";
 import { createRunSummary } from "../reporters/summary.ts";
 import type { Reporter } from "../types.ts";
@@ -116,6 +117,20 @@ export async function watchTests(options: WatchOptions): Promise<void> {
   const clearOnRerun = options.clearScreen ?? true;
 
   const config = await resolveLightningConfig(overrides);
+
+  // Watch is built on the warm in-process SSR runner; browser mode executes in
+  // real browser pages instead, so there's no cache to keep warm yet. Run once
+  // (like CI) rather than silently falling back to Node execution.
+  if (config.browser.enabled) {
+    process.stdout.write(
+      c.yellow("⚡️ browser mode does not support watch yet — running once\n"),
+    );
+    const { summary } = await runTests(overrides, fileFilters);
+    process.exitCode =
+      summary.failedFiles > 0 || summary.failedTests > 0 ? 1 : 0;
+    return;
+  }
+
   const graph = new DependencyGraph();
   // Prepend the dep tracker so it runs before the mock-hoist plugin and observes
   // the original ESM `import` statements.
