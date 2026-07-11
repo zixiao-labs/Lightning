@@ -44,11 +44,11 @@ interface PendingRun {
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
-    let body = "";
+    const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => {
-      body += chunk;
+      chunks.push(chunk);
     });
-    req.on("end", () => resolve(body));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString()));
     req.on("error", reject);
   });
 }

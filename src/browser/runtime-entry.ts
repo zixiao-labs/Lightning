@@ -27,7 +27,7 @@ export function defineConfig(config: LightningConfig): LightningConfig {
 }
 
 import { finishCollection, startCollection } from "../runtime/collect.ts";
-import { runSuiteTree, type RunOptions } from "../runtime/run.ts";
+import { runSuiteTree } from "../runtime/run.ts";
 import { installGlobals } from "../runtime/globals.ts";
 import { cleanupViState } from "../mock/index.ts";
 import {
@@ -45,8 +45,7 @@ import { cleanup } from "./public.ts";
 export const __lightning_browser__ = {
   startCollection,
   finishCollection,
-  runSuiteTree: (root: Parameters<typeof runSuiteTree>[0], opts: RunOptions) =>
-    runSuiteTree(root, opts),
+  runSuiteTree,
   installGlobals,
   startSnapshotSession,
   finishSnapshotSession,

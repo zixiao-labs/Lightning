@@ -1,4 +1,4 @@
-import { describe, expect, test, vi, beforeEach } from "@lightning-js/lightning";
+import { afterEach, beforeEach, describe, expect, test, vi } from "@lightning-js/lightning";
 import { double } from "./mock-target.ts";
 
 vi.mock("./mock-target.ts", () => ({ double: (n: number) => n * 100 }));
@@ -11,6 +11,10 @@ vi.mock("./mock-target.ts", () => ({ double: (n: number) => n * 100 }));
 describe("runtime APIs in the browser", () => {
   beforeEach(() => {
     document.title = "lightning-browser";
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   test("vi.fn and vi.spyOn work against browser objects", () => {
@@ -34,7 +38,6 @@ describe("runtime APIs in the browser", () => {
     expect(tick).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1_000);
     expect(tick).toHaveBeenCalledTimes(1);
-    vi.useRealTimers();
   });
 
   test("vi.mock intercepts module imports in the browser", () => {

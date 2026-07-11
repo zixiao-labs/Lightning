@@ -2,7 +2,6 @@ import { fork } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
-import { createServer } from "@nasti-toolchain/nasti";
 import type { ConfigOverrides } from "../config/resolve.ts";
 import type {
   FileResult,
@@ -10,6 +9,7 @@ import type {
   TestError,
 } from "../types.ts";
 import { runTestFile } from "../runtime/file-runner.ts";
+import { createOneShotServer } from "./one-shot-server.ts";
 import type { WorkerRequest, WorkerResponse } from "./rpc.ts";
 
 function toError(value: unknown): TestError {
@@ -151,14 +151,14 @@ async function runInline(
   const results: FileResult[] = [];
   const sharedServer = config.isolate
     ? undefined
-    : await createServer(config.nasti);
+    : await createOneShotServer(config.nasti);
   try {
     for (const file of files) {
-      let server: Awaited<ReturnType<typeof createServer>> | undefined =
+      let server: Awaited<ReturnType<typeof createOneShotServer>> | undefined =
         sharedServer;
       let result: FileResult;
       try {
-        server ??= await createServer(config.nasti);
+        server ??= await createOneShotServer(config.nasti);
         result = await runTestFile({
           config,
           file,

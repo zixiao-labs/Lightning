@@ -34,7 +34,8 @@ export function createCounter(initial = 0): HTMLElement {
   }
 
   increment.addEventListener("click", () => {
-    count += Number.parseInt(input.value, 10) || 1;
+    const step = Number.parseInt(input.value, 10);
+    count += Number.isNaN(step) ? 1 : step;
     renderCount();
   });
   reset.addEventListener("click", () => {

@@ -33,6 +33,36 @@ describe("counter component", () => {
     expect(step.value).toBe("10");
     userEvent.click(increment);
     expect(count.textContent).toBe("10");
+
+    userEvent.fill(step, "0");
+    userEvent.click(increment);
+    expect(count.textContent).toBe("10");
+  });
+
+  test("selects existing options and supports destructured double-click", () => {
+    const select = document.createElement("select");
+    select.innerHTML = '<option value="one">one</option><option value="two">two</option>';
+    const events: string[] = [];
+    select.addEventListener("input", () => events.push("input"));
+    select.addEventListener("change", () => events.push("change"));
+
+    userEvent.selectOptions(select, "two");
+    expect(select.value).toBe("two");
+    expect(events).toEqual(["input", "change"]);
+    expect(() => userEvent.selectOptions(select, "missing")).toThrow("could not find");
+    expect(() => userEvent.selectOptions(document.createElement("input"), "two")).toThrow(
+      "requires a <select>",
+    );
+
+    const button = document.createElement("button");
+    let clicks = 0;
+    let doubleClicks = 0;
+    button.addEventListener("click", () => clicks++);
+    button.addEventListener("dblclick", () => doubleClicks++);
+    const { dblClick } = userEvent;
+    dblClick(button);
+    expect(clicks).toBe(2);
+    expect(doubleClicks).toBe(1);
   });
 
   test("resets state and reflects it in class + computed style", () => {

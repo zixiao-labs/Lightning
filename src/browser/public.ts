@@ -85,6 +85,11 @@ function setValue(el: FillableElement, value: string): void {
   fire(el, new Event("change", { bubbles: true }));
 }
 
+function clickElement(el: Element): void {
+  if (typeof (el as HTMLElement).click === "function") (el as HTMLElement).click();
+  else fire(el, mouse("click"));
+}
+
 /**
  * Real-DOM interaction helpers. Events are dispatched in-page: handlers, form
  * activation behavior (`HTMLElement.click`) and `input`/`change` semantics are
@@ -92,13 +97,12 @@ function setValue(el: FillableElement, value: string): void {
  */
 export const userEvent = {
   click(el: Element): void {
-    if (typeof (el as HTMLElement).click === "function") (el as HTMLElement).click();
-    else fire(el, mouse("click"));
+    clickElement(el);
   },
 
   dblClick(el: Element): void {
-    this.click(el);
-    this.click(el);
+    clickElement(el);
+    clickElement(el);
     fire(el, mouse("dblclick"));
   },
 
@@ -140,7 +144,17 @@ export const userEvent = {
   },
 
   selectOptions(el: Element, value: string): void {
-    setValue(el as FillableElement, value);
+    if (el.tagName.toLowerCase() !== "select") {
+      throw new TypeError("selectOptions() requires a <select> element");
+    }
+    const select = el as HTMLSelectElement;
+    if (![...select.options].some((option) => option.value === value)) {
+      throw new Error(`selectOptions() could not find an option with value "${value}"`);
+    }
+    select.focus();
+    select.value = value;
+    fire(select, new Event("input", { bubbles: true }));
+    fire(select, new Event("change", { bubbles: true }));
   },
 
   focus(el: Element): void {

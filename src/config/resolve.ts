@@ -9,7 +9,6 @@ import { existsSync } from "node:fs";
 import { availableParallelism, cpus } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createServer } from "@nasti-toolchain/nasti";
 import type {
   CoverageOptions,
   CoverageProvider,
@@ -25,6 +24,7 @@ import type {
   TestPool,
 } from "../types.ts";
 import { createMockTransformPlugin } from "../mock/index.ts";
+import { createOneShotServer } from "../node/one-shot-server.ts";
 import type {
   BrowserName,
   BrowserOptions,
@@ -121,7 +121,7 @@ async function loadConfigFile(
     >;
     return (mod.default ?? mod.config ?? {}) as LightningConfig;
   }
-  const server = await createServer({ root, logLevel: "silent" });
+  const server = await createOneShotServer({ root, logLevel: "silent" });
   try {
     const url = "/" + path.relative(root, file).split(path.sep).join("/");
     const mod = await server.ssrLoadModule(url);
