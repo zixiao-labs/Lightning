@@ -7,6 +7,7 @@
     "baseUrl": ".",
     "paths": {
       "@lightning-js/lightning": ["src/index.ts"],
+      "@lightning-js/lightning/browser": ["src/browser/public.ts"],
     },
     "sourceMap": true,
     "declaration": true,
