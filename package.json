@@ -1,6 +1,6 @@
 {
   "name": "@lightning-js/lightning",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Lightning A Next Generation Testing Framework - 比神霄派雷法还快的测试框架，让测试更简单！",
   "keywords": [
     "test",
