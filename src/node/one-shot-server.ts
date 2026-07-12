@@ -10,6 +10,11 @@ export async function createOneShotServer(
   config: Parameters<typeof createServer>[0],
 ): Promise<Awaited<ReturnType<typeof createServer>>> {
   const server = await createServer(config);
-  await server.watcher.close();
+  try {
+    await server.watcher.close();
+  } catch (error) {
+    await server.close().catch(() => undefined);
+    throw error;
+  }
   return server;
 }
