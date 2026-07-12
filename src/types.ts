@@ -18,6 +18,24 @@ export type TestPool = "threads" | "forks" | "inline";
 /** Runtime environment installed before a test file is evaluated. */
 export type TestEnvironment = "node" | "jsdom" | "happy-dom" | "edge-runtime";
 
+/** Driver used to control real browsers in browser mode. */
+export type BrowserProviderName = "playwright" | "webdriverio";
+
+/** Real browsers a browser-mode run can target. */
+export type BrowserName = "chromium" | "firefox" | "webkit";
+
+/** Browser-mode options (ROADMAP Phase 5): run spec files in real browsers. */
+export interface BrowserOptions {
+  /** Run tests in a real browser instead of a Node pool. Also `--browser`. */
+  enabled?: boolean;
+  /** Browser driver. Only `playwright` is implemented today. */
+  provider?: BrowserProviderName;
+  /** Browser matrix; every test file runs once per entry. Default `["chromium"]`. */
+  browsers?: BrowserName[];
+  /** Launch without a visible window. Default true; `--headed` flips it. */
+  headless?: boolean;
+}
+
 /** Built-in reporter names. Custom strings are resolved as reporter module ids. */
 export type BuiltinReporter =
   | "default"
@@ -161,6 +179,8 @@ export interface FileResult {
   durationMs: number;
   /** Environment active while this file ran. */
   environment?: TestEnvironment;
+  /** Browser this file ran in (browser mode only). */
+  browser?: BrowserName;
   /** Project display name when running a multi-project config. */
   projectName?: string;
   /** Raw V8 script coverage collected for this file, when coverage is enabled. */
@@ -214,6 +234,8 @@ export interface TestOptions {
   snapshotDir?: string;
   /** Runtime environment for test files. Default `node`. */
   environment?: TestEnvironment;
+  /** Browser mode (run spec files in real browsers via Playwright). */
+  browser?: BrowserOptions;
   /** V8/Istanbul-compatible coverage options. */
   coverage?: CoverageOptions;
   /** CI sharding, e.g. `{ index: 1, count: 4 }` for `--shard=1/4`. */
@@ -244,6 +266,12 @@ export interface ResolvedLightningConfig {
   updateSnapshots: boolean;
   snapshotDir: string;
   environment: TestEnvironment;
+  browser: {
+    enabled: boolean;
+    provider: BrowserProviderName;
+    browsers: BrowserName[];
+    headless: boolean;
+  };
   coverage: Required<Omit<CoverageOptions, "thresholds">> & {
     thresholds?: CoverageThresholds;
   };

@@ -13,7 +13,13 @@ import c from "tinyrainbow";
 import { runTests } from "./node/orchestrator.ts";
 import { watchTests } from "./node/watch.ts";
 import type { ConfigOverrides } from "./config/resolve.ts";
-import type { CoverageProvider, CoverageReporter, TestEnvironment, TestPool } from "./types.ts";
+import type {
+  BrowserName,
+  CoverageProvider,
+  CoverageReporter,
+  TestEnvironment,
+  TestPool,
+} from "./types.ts";
 
 function readVersion(): string {
   try {
@@ -42,6 +48,9 @@ interface CliFlags {
   repeats?: string | number;
   testTimeout?: string | number;
   update?: boolean;
+  browser?: boolean;
+  browserName?: string | string[];
+  headed?: boolean;
   coverage?: boolean;
   coverageProvider?: CoverageProvider;
   coverageReporter?: string | string[];
@@ -109,6 +118,10 @@ function toOverrides(flags: CliFlags, includeRunOnly = true): ConfigOverrides {
   if (testTimeout !== undefined) o.testTimeout = testTimeout;
   if (flags.update !== undefined) o.update = flags.update;
   if (includeRunOnly) {
+    if (flags.browser !== undefined) o.browser = flags.browser;
+    const browserName = toStringArray(flags.browserName) as BrowserName[] | undefined;
+    if (browserName !== undefined) o.browserName = browserName;
+    if (flags.headed !== undefined) o.headed = flags.headed;
     if (flags.coverage !== undefined) o.coverage = flags.coverage;
     if (flags.coverageProvider !== undefined) o.coverageProvider = flags.coverageProvider;
     const coverageReporter = toStringArray(flags.coverageReporter) as CoverageReporter[] | undefined;
@@ -196,6 +209,9 @@ function withBaseFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
 
 function withRunOnlyFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
   return cmd
+    .option("--browser", "Run tests in a real browser (Playwright)")
+    .option("--browser-name <name>", "Browser(s) to run in: chromium, firefox, webkit (comma-separated)")
+    .option("--headed", "Launch browsers with a visible window")
     .option("--coverage", "Enable coverage collection")
     .option("--coverage-provider <provider>", "Coverage provider: v8")
     .option("--coverage-reporter <reporter>", "Coverage reporter(s): text, html, lcov, json")

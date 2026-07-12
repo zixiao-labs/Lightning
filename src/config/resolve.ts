@@ -9,7 +9,6 @@ import { existsSync } from "node:fs";
 import { availableParallelism, cpus } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createServer } from "@nasti-toolchain/nasti";
 import type {
   CoverageOptions,
   CoverageProvider,
@@ -25,6 +24,12 @@ import type {
   TestPool,
 } from "../types.ts";
 import { createMockTransformPlugin } from "../mock/index.ts";
+import { createOneShotServer } from "../node/one-shot-server.ts";
+import type {
+  BrowserName,
+  BrowserOptions,
+  BrowserProviderName,
+} from "../types.ts";
 
 const CONFIG_NAMES = [
   "lightning.config.ts",
@@ -65,6 +70,12 @@ export interface ConfigOverrides {
   testTimeout?: number;
   update?: boolean;
   environment?: TestEnvironment;
+  /** Enable browser mode (`--browser`). */
+  browser?: boolean;
+  /** Browser matrix override (`--browser-name chromium,firefox`). */
+  browserName?: BrowserName[];
+  /** Launch browsers with a visible window (`--headed`). */
+  headed?: boolean;
   coverage?: boolean;
   coverageProvider?: CoverageProvider;
   coverageReporter?: CoverageReporter[];
@@ -110,7 +121,7 @@ async function loadConfigFile(
     >;
     return (mod.default ?? mod.config ?? {}) as LightningConfig;
   }
-  const server = await createServer({ root, logLevel: "silent" });
+  const server = await createOneShotServer({ root, logLevel: "silent" });
   try {
     const url = "/" + path.relative(root, file).split(path.sep).join("/");
     const mod = await server.ssrLoadModule(url);
@@ -178,8 +189,46 @@ function resolveEnvironment(environment: TestEnvironment | undefined): TestEnvir
   return resolved;
 }
 
-function resolveShard(shard: ShardOptions | undefined): ShardOptions | undefined {
-  if (!shard) return undefined;
+const VALID_BROWSERS: readonly BrowserName[] = ["chromium", "firefox", "webkit"];
+const VALID_BROWSER_PROVIDERS: readonly BrowserProviderName[] = [
+  "playwright",
+  "webdriverio",
+];
+
+function resolveBrowser(
+  fileBrowser: BrowserOptions | undefined,
+  overrides: ConfigOverrides,
+): ResolvedLightningConfig["browser"] {
+  const enabled = overrides.browser ?? fileBrowser?.enabled ?? false;
+  const provider = fileBrowser?.provider ?? "playwright";
+  if (!VALID_BROWSER_PROVIDERS.includes(provider)) {
+    throw new Error(
+      `Invalid browser provider: ${String(provider)}. Expected one of ${VALID_BROWSER_PROVIDERS.join(", ")}.`,
+    );
+  }
+  if (enabled && provider === "webdriverio") {
+    throw new Error(
+      "The 'webdriverio' browser provider is not implemented yet; use provider: 'playwright'.",
+    );
+  }
+
+  const browsers = overrides.browserName ?? fileBrowser?.browsers ?? ["chromium"];
+  if (browsers.length === 0) {
+    throw new Error("browser.browsers must list at least one browser.");
+  }
+  for (const name of browsers) {
+    if (!VALID_BROWSERS.includes(name)) {
+      throw new Error(
+        `Invalid browser: ${String(name)}. Expected one of ${VALID_BROWSERS.join(", ")}.`,
+      );
+    }
+  }
+
+  const headless = overrides.headed ? false : (fileBrowser?.headless ?? true);
+  return { enabled, provider, browsers: [...new Set(browsers)], headless };
+}
+
+function resolveShard(shard: ShardOptions | undefined): ShardOptions | undefined {  if (!shard) return undefined;
   const { index, count } = shard;
   if (
     !Number.isInteger(index) ||
@@ -261,6 +310,10 @@ function mergeTestOptions(
       ...(project?.coverage ?? {}),
       ...(thresholds ? { thresholds } : {}),
     },
+    browser: {
+      ...(base?.browser ?? {}),
+      ...(project?.browser ?? {}),
+    },
   };
 }
 
@@ -335,6 +388,7 @@ function resolveOne(
     updateSnapshots: overrides.update ?? fileTest.update ?? false,
     snapshotDir: fileTest.snapshotDir ?? "__snapshots__",
     environment: resolveEnvironment(overrides.environment ?? fileTest.environment),
+    browser: resolveBrowser(fileTest.browser, overrides),
     coverage,
     ...(shard ? { shard } : {}),
     ...(project?.name ? { projectName: project.name } : {}),

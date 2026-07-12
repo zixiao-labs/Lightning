@@ -24,7 +24,7 @@ function cleanStack(stack: string | undefined): string {
   if (!stack) return "";
   return stack
     .split("\n")
-    .filter((line) => !/^\s*at /.test(line) || !/node:internal|@nasti-toolchain|\/lightning\/dist\/|node_modules/.test(line))
+    .filter((line) => !/^\s*at /.test(line) || !/node:internal|@nasti-toolchain|\/lightning\/dist\/|node_modules|\/@modules\//.test(line))
     .join("\n");
 }
 
@@ -51,7 +51,9 @@ export function createDefaultReporter(opts: ReporterOptions): Reporter {
 
     onFileDone(file) {
       const name = fileLabel(opts, file);
-      const env = file.environment && file.environment !== "node" ? c.dim(` (${file.environment})`) : "";
+      const envLabel =
+        file.browser ?? (file.environment && file.environment !== "node" ? file.environment : undefined);
+      const env = envLabel ? c.dim(` (${envLabel})`) : "";
       if (file.error) {
         console.log(`${c.red("✗")} ${c.red(name)} ${c.dim("(failed to load)")}${env}`);
         failures.push({ file: name, fileError: file.error });

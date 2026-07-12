@@ -258,6 +258,18 @@ function findPropertyDescriptor<T extends object, K extends keyof T>(
 const STUBBED_GLOBALS = new Map<PropertyKey, PropertyDescriptor | undefined>();
 const STUBBED_ENVS = new Map<string, string | undefined>();
 
+/** `process` is absent in browser mode; env stubbing is a Node-only feature. */
+function requireProcessEnv(caller: string): Record<string, string | undefined> {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+    .process?.env;
+  if (!env) {
+    throw new Error(
+      `${caller} requires a Node environment with process.env (unavailable in browser mode)`,
+    );
+  }
+  return env;
+}
+
 function stubGlobal(name: string | symbol, value: unknown): typeof vi {
   if (!STUBBED_GLOBALS.has(name)) {
     STUBBED_GLOBALS.set(
@@ -286,16 +298,20 @@ function stubEnv(
   name: string,
   value: string | number | boolean | undefined,
 ): typeof vi {
-  if (!STUBBED_ENVS.has(name)) STUBBED_ENVS.set(name, process.env[name]);
-  if (value === undefined) delete process.env[name];
-  else process.env[name] = String(value);
+  const env = requireProcessEnv("vi.stubEnv()");
+  if (!STUBBED_ENVS.has(name)) STUBBED_ENVS.set(name, env[name]);
+  if (value === undefined) delete env[name];
+  else env[name] = String(value);
   return vi;
 }
 
 function unstubAllEnvs(): typeof vi {
+  // No-op when nothing was stubbed, so per-file cleanup stays safe in browsers.
+  if (STUBBED_ENVS.size === 0) return vi;
+  const env = requireProcessEnv("vi.unstubAllEnvs()");
   for (const [name, value] of STUBBED_ENVS) {
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
+    if (value === undefined) delete env[name];
+    else env[name] = value;
   }
   STUBBED_ENVS.clear();
   return vi;

@@ -1,0 +1,8 @@
+.counter {
+  color: rgb(20, 20, 20);
+  font-family: monospace;
+}
+
+.counter.is-positive {
+  color: rgb(0, 128, 0);
+}

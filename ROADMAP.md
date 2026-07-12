@@ -68,7 +68,7 @@ Nasti 2.0 为下游测试框架预留了精确的接缝（见 `NASTI_2.0_PLAN.md
 - `@lightning-js/spy` — `vi.fn`/`vi.spyOn`（可借 tinyspy）
 - `@lightning-js/runner` — 收集器 + task 调度器（可独立复用）
 - `@lightning-js/snapshot` — 快照引擎
-- `@lightning-js/browser` — Playwright 浏览器模式（后期）
+- `@lightning-js/browser` — Playwright 浏览器模式（Phase 5 已以主包 `src/browser/` + `./browser` 子路径落地，是否拆独立包随 §4 monorepo 决议）
 
 > MVP 阶段可先单包，Phase 2 后再按需拆分。
 
@@ -176,19 +176,40 @@ Nasti 2.0 为下游测试框架预留了精确的接缝（见 `NASTI_2.0_PLAN.md
 
 ---
 
-### Phase 5 — 浏览器模式（Playwright）
+### Phase 5 — 浏览器模式（Playwright）✅
+
+> 状态：已落地 `test.browser`（`--browser` / `--browser-name` / `--headed`）——真实浏览器执行走 Nasti **client** 管线（非 module runner）；共享测试运行时（`test`/`expect`/`vi`/快照）经预打包的浏览器 bundle 注入页面；`render`/`userEvent` 组件测试 API；chromium/firefox/webkit 矩阵与 `isolate` → per-file Playwright context 映射。验收：`playground/browser`（vanilla counter + CSS + 快照）headless chromium 全绿，含真实点击/输入/`getComputedStyle` 断言。
 
 **目标**：在真实浏览器中跑测试/组件测试（README 的「built on Playwright」愿景）。
 
-**关键设计**：
-- `@lightning-js/browser`：Playwright 驱动，Nasti `createServer` 提供页面与模块（client 环境，真实浏览器执行而非 module runner）。
-- 测试代码与断言经 Nasti dev server 注入浏览器；结果经 ws 回传（复用 Nasti `createWsHotChannel`）。
-- `browser.provider: 'playwright' | 'webdriverio'`，`headless`、多浏览器矩阵（chromium/firefox/webkit）。
-- 组件测试 API（`render`）+ 与 Testing Library 协作。
+**关键设计**（落地版）：
+- **执行模型**：一台 Nasti `createServer`（client 管线，与普通 Nasti app 同构的 transform/rewrite）常驻服务 spec；Playwright 每个测试文件驱动一个 page 打开 `/__lightning__/?token=…`。页面内的 inline entry 收集→运行→回传结果。**不开 module runner**——浏览器直接原生 ESM 执行，这正是 Nasti 为 client 环境铺好的路。
+- **共享运行时注入**：`src/browser/runtime-entry.ts` 单独打成一个**自包含** bundle（`dist/browser-runtime.mjs`，`platform:'browser'`、无 chunk 拆分——虚拟模块 URL 无法服务相对 import）。一个 `pre` 插件（`src/browser/plugin.ts`）把 spec 的 `import ... from "@lightning-js/lightning"` 认领为虚拟模块并 `load` 该 bundle 文本；tester page 的 entry import 同一个 URL → 浏览器按 URL 去重 → 收集器单例共享（与 Node 侧 module runner 外部化裸 import 是同一招）。
+- **结果回传走 POST 而非 ws**：⚠️ Nasti 2.0.2 的 `createWsHotChannel` 是**只发不收**的（入站 ws 消息从不分发、`setInvokeHandler` 为 no-op），故 ROADMAP 原计划的「结果经 ws 回传」不可行。改为在 dev server 的 connect 栈追加 `/__lightning__` 中间件（`src/browser/middleware.ts`）：`GET /config` 下发运行载荷、`POST /result` 回收结果 + 更新后的快照数据，按 token 配对。transform 中间件只碰 GET 模块请求、sirv 只碰 GET/HEAD 文件，故这些路由干净落空到 hub。
+- **组件测试 API**：`render(markup|node)` 挂到 `document.body` 下的容器并在测试结束后自动清理；`userEvent`（click/dblClick/hover/fill/type/keyboard/…）派发真实 DOM 事件。二者是纯 DOM 工具，jsdom/happy-dom 的 Node 环境同样可用（组件 spec 可两栖跑）。经 `@lightning-js/lightning/browser` 子路径导出。
+- **浏览器安全化共享内核**：`expect`/快照原先静态 `import ... from "node:util"`（`inspect`）会污染浏览器 bundle。抽出 `src/utils/inspect.ts`（Node 走 `process.getBuiltinModule("node:util")`，浏览器走结构化 fallback formatter，DOM 节点渲染成 `outerHTML`）；快照拆成浏览器安全的 `snapshot/core.ts`（纯内存 session）+ Node IO 包装 `snapshot/index.ts`（读写 `.snap`）。浏览器模式下 orchestrator 读种子快照喂进页面、页面回传 dirty 数据再落盘。`vi.stubEnv` 对缺失 `process` 做守卫。
+- **`browser.provider`**：`'playwright'`（已实现）| `'webdriverio'`（校验期显式报「未实现」）。`headless` 默认 true，`--headed` 反转。
+- **Playwright 为可选 peer**：`playwright` → `playwright-core` 依次从 Lightning 自身作用域、再从用户项目根解析（pnpm 严格布局），缺失时给安装指引。
 
-**交付物**：`@lightning-js/browser`、浏览器 runtime bridge。
+**关键实现注记**（踩坑记录）：
+- ⚠️ **ws 通道只能单向**：见上，结果被迫走 POST。若日后 Nasti 补上入站 ws 分发 + `invoke` 桥，可迁回 `createWsHotChannel` 并去掉 middleware hub。
+- **结果必须预先 JSON 化**：页面里的 `error.diff` 常含 DOM 节点/函数/循环引用，`fetch` 的 body 序列化会炸。entry 侧 `jsonSafe` 先把 diff/结果拍扁（DOM→`outerHTML`、Map/Set→标记对象、循环→`[Circular]`）再 POST。
+- **失败的 dynamic import 信息量为零**：`import(testUrl)` 失败只报「failed to fetch module」；真正的 transform 错误在 dev server 的 500 响应体里，故 entry 捕获后再 `fetch(testUrl)` 取 body 拼进错误信息。
+- **两级超时**：per-test timeout 跑在页面内（健康页面永远会 POST 结果）；pool 侧另设一个 watchdog（`max(60s, testTimeout*10)`）只兜底「页面挂死/崩溃」——同步死循环、page crash。
+- **栈/来源改写**：浏览器栈里的 `http://localhost:<port>/...` 改写回项目路径；reporter 的 `cleanStack` 额外过滤 `/@modules/` 帧（运行时虚拟模块噪音）。
+- **打包为单文件**：browser-runtime 若被 tsdown 拆出共享 chunk，会变成 dev server 无法从虚拟模块 URL 服务的相对 import；用独立 build target + `fixedExtension` 强制单个 `.mjs`。
 
-**验收**：在 chromium headless 跑组件测试，含真实 DOM 交互断言。
+**限制 / 未做**（诚实记录）：
+- **watch 未支持**：watch 建立在常驻 SSR runner 的暖缓存上，浏览器模式在真实 page 里执行、暂无可暖的缓存 → `lightning watch --browser` 打印提示后单跑一次（不静默退回 Node 执行）。
+- **coverage 未支持**：浏览器模式不收集 V8 script coverage，`--coverage` 下打印 warning 并跳过（空报告只会误触阈值门控）。
+- **firefox/webkit** 配置支持但需本地装对应浏览器；离线环境仅 chromium 可用（见 CI/文档）。
+- **webdriverio provider** 仅占位。**CDP-trusted 输入**（真 `:hover`、OS 级键盘）未接——`userEvent` 派发的是真实但非 trusted 的 DOM 事件。
+
+**交付物**：`src/browser/*`（`public`/`runtime-entry`/`plugin`/`client`/`middleware`/`provider`/`pool`）、`@lightning-js/lightning/browser` 子路径导出、`playground/browser` 回归夹具。
+
+> **偏离说明**：原计划独立 `@lightning-js/browser` 包，实际放进主包 `src/browser/`（对齐「MVP 单包，按需拆包」的既定策略，§4）；组件 API 经 `./browser` 子路径而非独立包导出。结果回传由 ws 改为 HTTP POST（Nasti ws 单向所致）。
+
+**验收**：✅ 在 chromium headless 跑组件测试，含真实 DOM 交互（click/输入/`getComputedStyle`）与快照断言；失败路径正确渲染 diff + 浏览器栈 + 退出码 1。
 
 ---
 
@@ -237,7 +258,7 @@ Nasti 2.0 为下游测试框架预留了精确的接缝（见 `NASTI_2.0_PLAN.md
 | 2 | 断言/Mock/快照 ✅ | 迁移 Vitest 样例全绿 |
 | 3 | Watch ✅ | 改一处只重跑受影响测试 |
 | 4 | 环境/覆盖率/报告/分片 | jsdom + v8 覆盖率 + JUnit + shard |
-| 5 | 浏览器模式 | Playwright 组件测试 |
+| 5 | 浏览器模式 ✅ | Playwright 组件测试 |
 | 6 | 兼容/类型/基准/武陵 | Jest/Vitest 兼容 + 类型测试 + bench |
 
 > **下一步**：评审本 ROADMAP → 锁定 Phase 0 范围 → 搭 `lightning.config.ts` + `test` 环境接线 + 最小 runtime，打通第一条绿色用例。

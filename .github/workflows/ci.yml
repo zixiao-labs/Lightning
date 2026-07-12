@@ -38,7 +38,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install
 
       # Dogfood + playground specs import `@lightning-js/lightning` by name. Nasti's
       # module runner externalizes that bare import to Node, which resolves it from
