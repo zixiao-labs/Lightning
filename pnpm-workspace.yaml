@@ -3,3 +3,5 @@
 # ~/Library/Caches/ms-playwright; an auto-installed latest `playwright` would
 # resolve first and demand a browser download.
 autoInstallPeers: false
+minimumReleaseAgeExclude:
+  - '@nasti-toolchain/nasti@2.5.0'

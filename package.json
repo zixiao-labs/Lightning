@@ -64,16 +64,16 @@
     }
   },
   "devDependencies": {
-    "@types/node": "^25.9.3",
+    "@types/node": "^25.9.5",
     "playwright-core": "1.60.0",
     "tsdown": "0.21.10",
     "types": "^0.1.1",
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "@nasti-toolchain/nasti": "^2.0.2",
+    "@nasti-toolchain/nasti": "^2.5.0",
     "cac": "^7.0.0",
     "tinyglobby": "^0.2.17",
-    "tinyrainbow": "^3.1.0"
+    "tinyrainbow": "^3.1.1"
   }
 }
