@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readdir, readFile, realpath, rm, symlink, writeFile } f
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, test } from "@lightning-js/lightning";
 
@@ -66,6 +66,7 @@ describe("config loading", () => {
       const helperDir = path.join(root, "helpers");
       const dependency = path.join(root, "node_modules/config-dependency");
       await mkdir(helperDir);
+      await writeFile(path.join(helperDir, "asset.mjs"), 'export default "helper asset";');
       await mkdir(dependency);
       await writeFile(path.join(dependency, "package.json"), JSON.stringify({
         type: "module",
@@ -79,6 +80,14 @@ describe("config loading", () => {
         if (value !== "esm") throw new Error("wrong package export");
         if (fileURLToPath(import.meta.url) !== ${JSON.stringify(path.join(helperDir, "options.ts"))})
           throw new Error("wrong helper URL");
+        if (import.meta.dirname !== ${JSON.stringify(helperDir)} ||
+            import.meta.filename !== fileURLToPath(import.meta.url))
+          throw new Error("wrong helper file scope");
+        if (import.meta.resolve("./asset.mjs") !== ${JSON.stringify(pathToFileURL(path.join(helperDir, "asset.mjs")).href)})
+          throw new Error("wrong helper asset URL");
+        const resolve = import.meta.resolve;
+        if (resolve("config-dependency") !== ${JSON.stringify(pathToFileURL(path.join(dependency, "index.mjs")).href)})
+          throw new Error("wrong resolved package export");
         export const options: { globals: boolean; include: string[] } = ${options}.test;
       `);
       await writeFile(path.join(root, "lightning.config.ts"), `

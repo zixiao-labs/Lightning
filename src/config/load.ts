@@ -21,11 +21,17 @@ export async function importConfig(file: string): Promise<Record<string, unknown
       name: "lightning:config-file-scope",
       async transform(code, id) {
         if (!/\.[cm]?[jt]sx?$/.test(id)) return;
+        const fileURL = JSON.stringify(pathToFileURL(id).href);
         const result = await transform(id, code, {
           define: {
-            "import.meta.url": JSON.stringify(pathToFileURL(id).href),
+            "import.meta.url": fileURL,
             "import.meta.dirname": JSON.stringify(path.dirname(id)),
             "import.meta.filename": JSON.stringify(id),
+            // Native resolve's parent URL requires an experimental Node flag.
+            "import.meta.resolve": `(specifier) => __lightning_resolve(specifier, ${fileURL})`,
+          },
+          inject: {
+            __lightning_resolve: [import.meta.resolve("import-meta-resolve"), "resolve"],
           },
           sourcemap: true,
         });
