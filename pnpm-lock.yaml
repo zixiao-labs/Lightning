@@ -14,6 +14,9 @@ importers:
       cac:
         specifier: ^7.0.0
         version: 7.0.0
+      rolldown:
+        specifier: 1.2.1
+        version: 1.2.1
       tinyglobby:
         specifier: ^0.2.17
         version: 0.2.17
