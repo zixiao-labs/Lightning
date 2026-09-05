@@ -1,14 +1,12 @@
 /**
  * Resolve the effective Lightning config: defaults ← `lightning.config.*` ← CLI flags.
  *
- * A TS/JS config file is loaded through a throwaway Nasti server (`ssrLoadModule`),
- * reusing the same module-runner pipeline that runs the tests — so a `.ts` config with
- * top-level imports just works. The server is only spun up when a config file exists.
+ * TS configs and their local helpers are bundled, then imported as native ESM.
+ * Package imports use Node's ESM resolution, just like JS configs.
  */
 import { existsSync } from "node:fs";
 import { availableParallelism, cpus } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import type {
   CoverageOptions,
   CoverageProvider,
@@ -24,7 +22,7 @@ import type {
   TestPool,
 } from "../types.ts";
 import { createMockTransformPlugin } from "../mock/index.ts";
-import { createOneShotServer } from "../node/one-shot-server.ts";
+import { importConfig } from "./load.ts";
 import type {
   BrowserName,
   BrowserOptions,
@@ -110,25 +108,10 @@ function findConfigFile(root: string, explicit?: string): string | undefined {
 }
 
 async function loadConfigFile(
-  root: string,
   file: string,
 ): Promise<LightningConfig> {
-  // `.mjs`/`.js` (ESM) can be imported directly; `.ts` needs the Nasti runner.
-  if (/\.(mjs|js)$/.test(file)) {
-    const mod = (await import(pathToFileURL(file).href)) as Record<
-      string,
-      unknown
-    >;
-    return (mod.default ?? mod.config ?? {}) as LightningConfig;
-  }
-  const server = await createOneShotServer({ root, logLevel: "silent" });
-  try {
-    const url = "/" + path.relative(root, file).split(path.sep).join("/");
-    const mod = await server.ssrLoadModule(url);
-    return (mod.default ?? mod.config ?? {}) as LightningConfig;
-  } finally {
-    await server.close();
-  }
+  const mod = await importConfig(file);
+  return (mod.default ?? mod.config ?? {}) as LightningConfig;
 }
 
 async function loadConfig(overrides: ConfigOverrides): Promise<LoadedConfig> {
@@ -136,7 +119,7 @@ async function loadConfig(overrides: ConfigOverrides): Promise<LoadedConfig> {
   const configFile = findConfigFile(cwd, overrides.config);
   return {
     cwd,
-    config: configFile ? await loadConfigFile(cwd, configFile) : {},
+    config: configFile ? await loadConfigFile(configFile) : {},
   };
 }
 
