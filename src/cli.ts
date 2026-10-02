@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { cac } from "cac";
 import c from "tinyrainbow";
-import { runTests } from "./node/orchestrator.ts";
+import { runTests, runBenchmarkTests } from "./node/orchestrator.ts";
 import { watchTests } from "./node/watch.ts";
 import type { ConfigOverrides } from "./config/resolve.ts";
 import type {
@@ -58,6 +58,13 @@ interface CliFlags {
   shard?: string;
   watch?: boolean;
   clearScreen?: boolean;
+  typecheck?: boolean;
+  tsconfig?: string;
+  project?: string;
+  outputFile?: string;
+  baseline?: string;
+  compare?: string;
+  regressionThreshold?: string | number;
 }
 
 function toNumber(
@@ -99,11 +106,18 @@ function toOverrides(flags: CliFlags, includeRunOnly = true): ConfigOverrides {
   if (flags.testNamePattern !== undefined)
     o.testNamePattern = flags.testNamePattern;
   if (flags.globals !== undefined) o.globals = flags.globals;
-  // cac always populates `reporter` with its `{ default: "default" }` value, so an
-  // unmodified flag is indistinguishable from `--reporter default`. Treat the default
-  // as "not provided" to keep priority order (cac default ← config file ← explicit flag).
-  if (flags.reporter !== undefined && flags.reporter !== "default")
-    o.reporter = flags.reporter;
+  if (flags.reporter !== undefined) o.reporter = flags.reporter;
+  if (flags.typecheck !== undefined) o.typecheck = flags.typecheck;
+  if (flags.tsconfig !== undefined) o.tsconfig = flags.tsconfig;
+  if (flags.project !== undefined) o.project = flags.project;
+  if (flags.outputFile !== undefined) o.outputFile = flags.outputFile;
+  if (flags.baseline !== undefined) o.benchmarkBaseline = flags.baseline;
+  if (flags.compare !== undefined) o.benchmarkCompare = flags.compare;
+  if (flags.regressionThreshold !== undefined) {
+    const threshold = Number(flags.regressionThreshold);
+    if (!Number.isFinite(threshold) || threshold < 0) throw new Error("Invalid --regression-threshold: expected a non-negative percentage");
+    o.benchmarkThreshold = threshold;
+  }
   if (flags.silent !== undefined) o.silent = flags.silent;
   if (flags.pool !== undefined) o.pool = flags.pool;
   const maxWorkers = toNumber(flags.maxWorkers, "--maxWorkers");
@@ -135,12 +149,12 @@ function toOverrides(flags: CliFlags, includeRunOnly = true): ConfigOverrides {
 }
 
 function toWatchOverrides(flags: CliFlags): ConfigOverrides {
-  return { ...toOverrides(flags, false), coverage: false };
+  return toOverrides(flags);
 }
 
-async function run(filters: string[], flags: CliFlags): Promise<void> {
+async function run(filters: string[], flags: CliFlags, benchmark = false): Promise<void> {
   try {
-    const { summary } = await runTests(toOverrides(flags), filters);
+    const { summary } = await (benchmark ? runBenchmarkTests : runTests)(toOverrides(flags), filters);
     process.exitCode =
       summary.failedFiles > 0 || summary.failedTests > 0 ? 1 : 0;
   } catch (err) {
@@ -191,7 +205,11 @@ function withBaseFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
       "Run only tests whose name matches the pattern",
     )
     .option("--globals", "Inject test APIs (test/expect/...) onto globalThis")
-    .option("--reporter <name>", "Reporter to use", { default: "default" })
+    .option("--reporter <name>", "Reporter to use")
+    .option("--output-file <path>", "JSON/JUnit reporter output path")
+    .option("-p, --project <name>", "Run only the named project")
+    .option("--typecheck", "Also check *.test-d.ts and *.spec-d.ts without executing them")
+    .option("--tsconfig <path>", "Type-test TypeScript config")
     .option("--pool <pool>", "Execution pool: threads, forks, or inline")
     .option(
       "--maxWorkers <number>",
@@ -213,7 +231,7 @@ function withRunOnlyFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
     .option("--browser-name <name>", "Browser(s) to run in: chromium, firefox, webkit (comma-separated)")
     .option("--headed", "Launch browsers with a visible window")
     .option("--coverage", "Enable coverage collection")
-    .option("--coverage-provider <provider>", "Coverage provider: v8")
+    .option("--coverage-provider <provider>", "Coverage provider: v8 or istanbul")
     .option("--coverage-reporter <reporter>", "Coverage reporter(s): text, html, lcov, json")
     .option("--coverage-reports-directory <dir>", "Coverage output directory")
     .option("--shard <shard>", "Run a CI shard, e.g. 1/4") as T;
@@ -231,7 +249,7 @@ function withFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
 }
 
 function withWatchCommandFlags<T extends ReturnType<typeof cli.command>>(cmd: T): T {
-  return withWatchFlags(withBaseFlags(cmd));
+  return withFlags(cmd);
 }
 
 withFlags(cli.command("run [...filters]", "Run tests once and exit")).action(
@@ -241,6 +259,13 @@ withFlags(cli.command("run [...filters]", "Run tests once and exit")).action(
 withWatchCommandFlags(
   cli.command("watch [...filters]", "Rerun affected tests on file change"),
 ).action((filters: string[], flags: CliFlags) => watch(filters, flags));
+
+withBaseFlags(cli.command("bench [...filters]", "Run Tinybench benchmarks once"))
+  .option("--shard <shard>", "Run a CI shard, e.g. 1/4")
+  .option("--baseline <path>", "Write a benchmark JSON baseline")
+  .option("--compare <path>", "Compare against a benchmark JSON baseline")
+  .option("--regression-threshold <percent>", "Maximum allowed throughput loss (default 10)")
+  .action((filters: string[], flags: CliFlags) => run(filters, flags, true));
 
 // Bare `lightning [...filters]`: watch in a TTY, run once otherwise.
 withFlags(

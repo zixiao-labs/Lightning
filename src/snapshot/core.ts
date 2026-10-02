@@ -8,6 +8,7 @@
  * by the orchestrator and posts the updated data back over the result channel.
  */
 import { inspect } from "../utils/inspect.ts";
+import { getExecutionScope } from "../runtime/context.ts";
 
 export interface SnapshotSerializer {
   test(value: unknown): boolean;
@@ -82,12 +83,15 @@ export function serializeSnapshot(value: unknown): string {
 }
 
 function keyFor(hint?: string): string {
-  if (!state?.currentTestName) {
+  const scope = getExecutionScope();
+  const name = scope?.snapshotName ?? state?.currentTestName;
+  if (!state || !name) {
     throw new Error("Snapshot matcher was called outside of a running test");
   }
-  const base = hint ? `${state.currentTestName}: ${hint}` : state.currentTestName;
-  const count = (state.counters.get(base) ?? 0) + 1;
-  state.counters.set(base, count);
+  const counters = scope?.snapshotCounts ?? state.counters;
+  const base = hint ? `${name}: ${hint}` : name;
+  const count = (counters.get(base) ?? 0) + 1;
+  counters.set(base, count);
   return `${base} ${count}`;
 }
 

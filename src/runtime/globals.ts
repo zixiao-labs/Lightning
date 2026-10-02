@@ -15,26 +15,36 @@ import {
 } from "./collect.ts";
 import { expect } from "../expect/index.ts";
 import { vi } from "../mock/index.ts";
+import { onTestFinished, onTestFailed } from "./context.ts";
+import { bench } from "../bench/index.ts";
 
 export const api = {
   test,
   it,
+  bench,
   describe,
   expect,
   vi,
+  jest: vi,
+  onTestFinished,
+  onTestFailed,
   beforeAll,
   afterAll,
   beforeEach,
   afterEach,
 } as const;
 
-let installed = false;
-
-/** Assign the API onto `globalThis` (idempotent). */
-export function installGlobals(): void {
-  if (installed) return;
-  installed = true;
+/** Install for one file; restore the exact previous descriptors at teardown. */
+export function installGlobals(): () => void {
+  const previous = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries(api)) {
-    (globalThis as Record<string, unknown>)[key] = value;
+    previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
   }
+  return () => {
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  };
 }

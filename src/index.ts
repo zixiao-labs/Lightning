@@ -20,8 +20,22 @@ export {
   afterEach,
 } from "./runtime/collect.ts";
 export { expect, LightningAssertionError } from "./expect/index.ts";
-export { vi, fn, spyOn, isMockFunction } from "./mock/index.ts";
-export { defineConfig } from "./config/define.ts";
+export { onTestFinished, onTestFailed } from "./runtime/context.ts";
+export type { TestContext } from "./runtime/context.ts";
+export { vi, vi as jest, fn, spyOn, isMockFunction } from "./mock/index.ts";
+export { defineConfig, defineProject } from "./config/define.ts";
+export { mapJestConfig } from "./config/compat.ts";
+export { bench, describeBench } from "./bench/index.ts";
+export { expectTypeOf, assertType } from "./type-testing.ts";
+
+/** Lazy Node orchestrator: importing test APIs does not load TypeScript. */
+export async function lightning(
+  options: import("./config/resolve.ts").ConfigOverrides = {},
+  filters: string[] = [],
+) {
+  const { runTests } = await import("./node/orchestrator.ts");
+  return runTests(options, filters);
+}
 
 export type {
   LightningConfig,

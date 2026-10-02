@@ -13,6 +13,9 @@ import {
 import { CoverageSession } from "../coverage/index.ts";
 import { resolveFileEnvironment, setupEnvironment } from "../environments/index.ts";
 import type { V8CoverageScript } from "../types.ts";
+import { captureUnhandledErrors, unhandledErrorResults } from "./unhandled.ts";
+import { enrichCoverage } from "../node/test-server.ts";
+import { startIstanbulCoverage, finishIstanbulCoverage } from "../coverage/istanbul-core.ts";
 
 type DevServer = Awaited<ReturnType<typeof createServer>>;
 
@@ -38,21 +41,24 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
   const environment = await resolveFileEnvironment(config, file);
   let env: Awaited<ReturnType<typeof setupEnvironment>> | undefined;
   let coverage: CoverageSession | undefined;
+  let restoreGlobals: (() => void) | undefined;
+  const unhandled = captureUnhandledErrors();
 
   async function stopCoverage(): Promise<V8CoverageScript[] | undefined> {
     if (!coverage) return undefined;
     const current = coverage;
     coverage = undefined;
-    return current.stop();
+    return enrichCoverage(server, await current.stop());
   }
 
   try {
     env = await setupEnvironment(environment);
-    if (config.coverage.enabled) {
-      coverage = new CoverageSession();
+    if (config.coverage.enabled && config.coverage.provider === "istanbul") startIstanbulCoverage();
+    if (config.coverage.enabled && config.coverage.provider === "v8") {
+      coverage = new CoverageSession(config.root);
       await coverage.start();
     }
-    if (config.globals) installGlobals();
+    if (config.globals) restoreGlobals = installGlobals();
 
     startCollection();
     startSnapshotFile({
@@ -72,14 +78,18 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
       onTestStart: (name) => setCurrentSnapshotTest(name),
       onTestEnd: () => setCurrentSnapshotTest(undefined),
     });
-    const coverageScripts = await stopCoverage().catch(() => undefined);
+    await unhandled.drain();
+    results.push(...unhandledErrorResults(unhandled.errors));
+    const coverageScripts = await stopCoverage();
     return {
       filepath: file,
       results,
       durationMs: performance.now() - start,
       environment,
+      ...(unhandled.errors.length ? { unhandledErrors: unhandled.errors } : {}),
       ...(config.projectName ? { projectName: config.projectName } : {}),
       ...(coverageScripts ? { coverage: coverageScripts } : {}),
+      ...(config.coverage.enabled && config.coverage.provider === "istanbul" ? { istanbulCoverage: finishIstanbulCoverage() } : {}),
     };
   } catch (err) {
     const coverageScripts = await stopCoverage().catch(() => undefined);
@@ -91,9 +101,12 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
       environment,
       ...(config.projectName ? { projectName: config.projectName } : {}),
       ...(coverageScripts ? { coverage: coverageScripts } : {}),
+      ...(config.coverage.enabled && config.coverage.provider === "istanbul" ? { istanbulCoverage: finishIstanbulCoverage() } : {}),
     };
   } finally {
     await stopCoverage().catch(() => undefined);
+    unhandled.close();
+    restoreGlobals?.();
     finishSnapshotFile();
     cleanupViState();
     await env?.teardown();

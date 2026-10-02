@@ -37,8 +37,7 @@ import { glob } from "tinyglobby";
 import c from "tinyrainbow";
 import { createServer } from "@nasti-toolchain/nasti";
 import type { FileResult, ResolvedLightningConfig } from "../types.ts";
-import { readFile } from "node:fs/promises";
-import { resolveLightningConfig, type ConfigOverrides } from "../config/resolve.ts";
+import { resolveLightningConfigs, type ConfigOverrides } from "../config/resolve.ts";
 import { runTestFile } from "../runtime/file-runner.ts";
 import { runTests } from "./orchestrator.ts";
 import { createDefaultReporter } from "../reporters/default.ts";
@@ -46,6 +45,10 @@ import { createRunSummary } from "../reporters/summary.ts";
 import type { Reporter } from "../types.ts";
 import { DependencyGraph, createDepTrackerPlugin } from "./dep-graph.ts";
 import { normalizePath } from "./path-utils.ts";
+import { watchBrowserTests } from "./browser-watch.ts";
+import { createTestServer, reportCoverage } from "./test-server.ts";
+import { createIstanbulCoverageReport } from "../coverage/istanbul.ts";
+import { detectGlobalOnly } from "./only.ts";
 
 /** Debounce window for coalescing a burst of file changes into one rerun. */
 const RERUN_DEBOUNCE_MS = 100;
@@ -78,24 +81,12 @@ async function discover(config: ResolvedLightningConfig, filters: string[]): Pro
     ignore: config.exclude,
     absolute: true,
     dot: false,
+    followSymbolicLinks: false,
   });
-  const normalized = matches.map(normalizePath).sort();
+  const normalized = matches.map(normalizePath).filter((file) => !/\.(?:test|spec)-d\.[cm]?ts$/.test(file)).sort();
   if (filters.length === 0) return normalized;
   const needles = filters.map(normalizePath);
   return normalized.filter((file) => needles.some((needle) => file.includes(needle)));
-}
-
-const ONLY_RE = /\b(?:test|it|describe)\s*\.\s*only\s*\(/;
-
-async function detectGlobalOnly(files: string[]): Promise<boolean> {
-  for (const file of files) {
-    try {
-      if (ONLY_RE.test(await readFile(file, "utf-8"))) return true;
-    } catch {
-      // best-effort; the real error surfaces on load
-    }
-  }
-  return false;
 }
 
 function isTestFile(file: string): boolean {
@@ -116,18 +107,13 @@ export async function watchTests(options: WatchOptions): Promise<void> {
   const { overrides, fileFilters } = options;
   const clearOnRerun = options.clearScreen ?? true;
 
-  const config = await resolveLightningConfig(overrides);
+  const entries = await resolveLightningConfigs(overrides);
+  if (entries.length !== 1) throw new Error("Watch one project at a time with --project <name>.");
+  const config = entries[0]!.config;
+  if (config.typecheck.enabled) throw new Error("Type tests are run-only; use lightning run --typecheck.");
 
-  // Watch is built on the warm in-process SSR runner; browser mode executes in
-  // real browser pages instead, so there's no cache to keep warm yet. Run once
-  // (like CI) rather than silently falling back to Node execution.
   if (config.browser.enabled) {
-    process.stdout.write(
-      c.yellow("⚡️ browser mode does not support watch yet — running once\n"),
-    );
-    const { summary } = await runTests(overrides, fileFilters);
-    process.exitCode =
-      summary.failedFiles > 0 || summary.failedTests > 0 ? 1 : 0;
+    await watchBrowserTests({ config, fileFilters, clearScreen: clearOnRerun });
     return;
   }
 
@@ -136,7 +122,7 @@ export async function watchTests(options: WatchOptions): Promise<void> {
   // the original ESM `import` statements.
   config.nasti.plugins = [createDepTrackerPlugin(graph, config.root), ...(config.nasti.plugins ?? [])];
 
-  const server = await createServer(config.nasti);
+  const server = await createTestServer(config, true);
 
   // Mutable watch state.
   let allTestFiles = new Set(await discover(config, fileFilters));
@@ -166,8 +152,9 @@ export async function watchTests(options: WatchOptions): Promise<void> {
   }
 
   function effectiveConfig(): ResolvedLightningConfig {
+    const { testNamePattern: _previousPattern, ...base } = config;
     return {
-      ...config,
+      ...base,
       updateSnapshots: updateSnapshots || updateOnce,
       // testNamePattern is optional under exactOptionalPropertyTypes: omit the
       // key entirely rather than set it to `undefined`.
@@ -220,6 +207,14 @@ export async function watchTests(options: WatchOptions): Promise<void> {
       await reporter.onFileDone?.(result);
     }
     failedFiles = failed;
+    if (config.coverage.enabled) {
+      const report = cfg.coverage.provider === "istanbul"
+        ? await createIstanbulCoverageReport(cfg, fileResults.map((file) => file.istanbulCoverage ?? {}))
+        : await reportCoverage(cfg, fileResults.flatMap((file) => file.coverage ?? []));
+      if (report.thresholdErrors.length) {
+        fileResults.push({ filepath: path.join(config.root, "coverage"), results: [], durationMs: 0, error: { message: report.thresholdErrors.join("\n") } });
+      }
+    }
     await reporter.onFinished?.(
       fileResults,
       createRunSummary(fileResults, fileResults.reduce((total, file) => total + file.durationMs, 0)),

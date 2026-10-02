@@ -3,21 +3,17 @@
  * client (browser) pipeline and serves the prebuilt, self-contained browser
  * runtime instead of the Node package.
  *
- * Flow: a spec's `import ... from "@lightning-js/lightning"` is rewritten by
- * Nasti's client pipeline to `/@modules/@lightning-js/lightning`; the dev
- * server's virtual-module path asks plugins to `resolveId` that specifier, and
- * this plugin claims it with a `\0`-prefixed id and `load`s the bundle text.
- * The tester page's entry imports the exact same URL, so both share one module
- * instance (the collector singleton) — the same trick the Node side plays with
- * the module runner externalizing bare imports.
+ * Nasti's built-in pre resolver wins over user resolveId hooks for installed
+ * packages. Rewrite framework imports to one dedicated URL before Nasti's
+ * import rewrite and serve the runtime there. The tester and specs therefore
+ * share one collector regardless of package layout or project aliases.
  */
 import { readFileSync } from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { NastiPlugin } from "@nasti-toolchain/nasti";
+import { rewriteImportSources } from "../node/compatibility.ts";
 
-export const LIGHTNING_API_URL = "/@modules/@lightning-js/lightning";
-
-const VIRTUAL_API_ID = "\0lightning:browser-api";
-const VIRTUAL_HELPERS_ID = "\0lightning:browser-helpers";
+export const LIGHTNING_API_URL = "/__lightning__/runtime.js";
 
 let runtimeCache: string | undefined;
 
@@ -41,19 +37,35 @@ function loadRuntimeBundle(): string {
 export function createBrowserApiPlugin(): NastiPlugin {
   return {
     name: "lightning:browser-api",
-    enforce: "pre",
-    resolveId(source) {
-      if (source === "@lightning-js/lightning") return VIRTUAL_API_ID;
-      if (source === "@lightning-js/lightning/browser") return VIRTUAL_HELPERS_ID;
-      return null;
+    // After instrumentation/compatibility, before Nasti's client import rewrite.
+    enforce: "post",
+    configureServer(server) {
+      server.middlewares.use((req: IncomingMessage, res: ServerResponse, next: (error?: unknown) => void) => {
+        if (req.url?.split("?")[0] !== LIGHTNING_API_URL) return next();
+        try {
+          res.setHeader("Content-Type", "application/javascript");
+          res.setHeader("Cache-Control", "no-cache");
+          res.end(loadRuntimeBundle());
+        } catch (error) {
+          next(error);
+        }
+      });
     },
-    load(id) {
-      if (id === VIRTUAL_API_ID) return loadRuntimeBundle();
-      if (id === VIRTUAL_HELPERS_ID) {
-        // Thin re-export so both import paths hit one runtime instance.
-        return `export { render, cleanup, userEvent } from "${LIGHTNING_API_URL}";\n`;
-      }
-      return null;
+    transform(code, id) {
+      // Keep the exact URL identical even when Lightning is installed beneath
+      // the project root (where Nasti would otherwise choose a root-relative
+      // alias URL and create a second collector instance).
+      if (!/\.[cm]?[jt]sx?$/.test(id.split("?")[0] ?? id)) return null;
+      const rewritten = rewriteImportSources(code, id, {
+        "@lightning-js/lightning": LIGHTNING_API_URL,
+        "@lightning-js/lightning/browser": LIGHTNING_API_URL,
+        vitest: LIGHTNING_API_URL,
+        "vitest/config": LIGHTNING_API_URL,
+        "@lightning-js/lightning/config": LIGHTNING_API_URL,
+        "@vitest/browser/context": LIGHTNING_API_URL,
+        "@jest/globals": LIGHTNING_API_URL,
+      });
+      return rewritten.code === code ? null : rewritten;
     },
   };
 }

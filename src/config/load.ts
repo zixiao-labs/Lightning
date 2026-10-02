@@ -7,7 +7,7 @@ import { transform } from "rolldown/experimental";
 
 /** Load TS configs as native ESM so package exports use the `import` condition. */
 export async function importConfig(file: string): Promise<Record<string, unknown>> {
-  if (/\.(mjs|js)$/.test(file)) {
+  if (/\.(mjs|js)$/.test(file) && !/(?:^|[/\\])vitest\.config\./.test(file)) {
     return import(pathToFileURL(file).href);
   }
 
@@ -15,9 +15,15 @@ export async function importConfig(file: string): Promise<Record<string, unknown
     input: file,
     platform: "node",
     // Bundle local TS helpers, leaving packages to Node's native ESM loader.
-    external: (id) => !id.startsWith(".") && !path.isAbsolute(id),
+    external: (id) => id !== "vitest/config" && !id.startsWith(".") && !path.isAbsolute(id),
     treeshake: false,
     plugins: [{
+      name: "lightning:config-compatibility",
+      resolveId(id) {
+        if (id === "vitest/config") return { id: import.meta.resolve("@lightning-js/lightning/config"), external: true };
+        return null;
+      },
+    }, {
       name: "lightning:config-file-scope",
       async transform(code, id) {
         if (!/\.[cm]?[jt]sx?$/.test(id)) return;

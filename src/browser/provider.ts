@@ -11,13 +11,43 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { BrowserName } from "../types.ts";
 
+export interface BrowserAction {
+  method: string;
+  selector: string;
+  value?: string;
+}
+
+export interface PlaywrightLocator {
+  click(): Promise<void>;
+  dblclick(): Promise<void>;
+  hover(): Promise<void>;
+  fill(value: string): Promise<void>;
+  pressSequentially(value: string): Promise<void>;
+  press(value: string): Promise<void>;
+  selectOption(value: string): Promise<unknown>;
+  focus(): Promise<void>;
+  evaluate(fn: (el: HTMLElement) => void): Promise<void>;
+}
+
 /** Structural slice of Playwright's API — enough to launch and drive pages. */
 export interface PlaywrightPage {
   goto(url: string): Promise<unknown>;
   close(): Promise<void>;
+  exposeBinding(name: string, callback: (source: unknown, action: BrowserAction) => Promise<void>): Promise<void>;
+  locator(selector: string): PlaywrightLocator;
+  mouse: { move(x: number, y: number): Promise<void> };
+  coverage: {
+    startJSCoverage(options: { resetOnNavigation: boolean }): Promise<void>;
+    stopJSCoverage(): Promise<Array<{
+      url: string;
+      source?: string;
+      functions: import("../types.ts").V8CoverageFunction[];
+    }>>;
+  };
   on(event: "console", listener: (message: PlaywrightConsoleMessage) => void): void;
   on(event: "pageerror", listener: (error: Error) => void): void;
   on(event: "crash", listener: () => void): void;
+  on(event: "close", listener: () => void): void;
 }
 
 export interface PlaywrightConsoleMessage {
