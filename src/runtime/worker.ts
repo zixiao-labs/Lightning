@@ -1,7 +1,7 @@
 import process from "node:process";
 import { parentPort } from "node:worker_threads";
 import { resolveLightningConfig } from "../config/resolve.ts";
-import { createOneShotServer } from "../node/one-shot-server.ts";
+import { createTestServer } from "../node/test-server.ts";
 import type { WorkerRequest, WorkerResponse } from "../node/rpc.ts";
 import { runTestFile } from "./file-runner.ts";
 
@@ -17,10 +17,10 @@ function post(message: WorkerResponse): void {
 
 async function handle(message: WorkerRequest): Promise<void> {
   if (message.type !== "run") return;
-  let server: Awaited<ReturnType<typeof createOneShotServer>> | undefined;
+  let server: Awaited<ReturnType<typeof createTestServer>> | undefined;
   try {
     const config = await resolveLightningConfig(message.overrides);
-    server = await createOneShotServer(config.nasti);
+    server = await createTestServer(config);
     const result = await runTestFile({
       config,
       file: message.file,

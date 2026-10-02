@@ -1,4 +1,5 @@
 import type { NastiPlugin } from "@nasti-toolchain/nasti";
+import { when, isWhenChain, resetWhen } from "./when.ts";
 
 type AnyFunction = (...args: any[]) => any;
 
@@ -169,6 +170,7 @@ export function fn<T extends AnyFunction = AnyFunction>(
     config.implementation = undefined;
     config.once = [];
     config.name = "vi.fn()";
+    resetWhen(mock);
     return mock;
   };
   mock.mockRestore = () => {
@@ -540,6 +542,8 @@ async function importActual<T>(
 export const vi = {
   fn,
   spyOn,
+  when,
+  isWhenChain,
   mocked: <T>(value: T): T => value,
   isMockFunction,
   clearAllMocks() {

@@ -3,6 +3,10 @@
 /dist
 /build
 coverage/
+!src/coverage/
+!src/coverage/**
+!test/fixtures/coverage/
+!test/fixtures/coverage/**
 test-results/
 /.vscode
 .DS_Store
@@ -14,3 +18,6 @@ test-results/
 *.swo
 /.zed
 /.logos
+/test/.cli-integration-*
+/test/.browser-workflows-*
+/.nasti

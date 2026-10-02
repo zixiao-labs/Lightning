@@ -3,8 +3,8 @@
  *
  * These are plain DOM utilities: they work in browser mode (real browsers) and
  * equally in the jsdom/happy-dom Node environments, so a component spec can run
- * in either. Events are real DOM events dispatched in-page (not CDP-trusted
- * input); Testing Library queries compose naturally with the returned
+ * in either. Browser actions use Playwright's trusted input bridge;
+ * Testing Library queries compose naturally with the returned
  * `container` since it's a real element in the live document.
  *
  * In browser mode the runner removes containers rendered during a test after
@@ -91,11 +91,10 @@ function clickElement(el: Element): void {
 }
 
 /**
- * Real-DOM interaction helpers. Events are dispatched in-page: handlers, form
- * activation behavior (`HTMLElement.click`) and `input`/`change` semantics are
- * real, but the events are not OS/CDP-trusted (`:hover` styles won't apply).
+ * DOM fallback for emulated environments. The exported helpers below use
+ * trusted Playwright actions when the browser runner's bridge is available.
  */
-export const userEvent = {
+const domUserEvent = {
   click(el: Element): void {
     clickElement(el);
   },
@@ -164,4 +163,45 @@ export const userEvent = {
   blur(el: Element): void {
     (el as HTMLElement).blur?.();
   },
+};
+
+type ActionName = keyof typeof domUserEvent;
+type InputBridge = (action: { method: ActionName; selector: string; value?: string }) => Promise<void>;
+let actionId = 0;
+
+async function action(method: ActionName, el: Element, value?: string): Promise<void> {
+  if (method === "selectOptions") {
+    if (el.tagName.toLowerCase() !== "select") throw new TypeError("selectOptions() requires a <select> element");
+    if (![...(el as HTMLSelectElement).options].some((option) => option.value === value)) {
+      throw new Error(`selectOptions() could not find an option with value "${value}"`);
+    }
+  }
+  const bridge = (globalThis as typeof globalThis & { __lightning_input__?: InputBridge }).__lightning_input__;
+  if (!bridge) {
+    const fallback = domUserEvent[method] as (el: Element, value?: string) => void;
+    fallback(el, value);
+    return;
+  }
+  if (!el.isConnected) throw new Error(`userEvent.${method}() requires an element attached to the document`);
+  const attribute = `data-lightning-action-${++actionId}`;
+  el.setAttribute(attribute, "");
+  try {
+    await bridge({ method, selector: `[${attribute}]`, ...(value === undefined ? {} : { value }) });
+  } finally {
+    el.removeAttribute(attribute);
+  }
+}
+
+/** Await every action. Real browsers use trusted input; DOM emulators dispatch events. */
+export const userEvent = {
+  click: (el: Element) => action("click", el),
+  dblClick: (el: Element) => action("dblClick", el),
+  hover: (el: Element) => action("hover", el),
+  unhover: (el: Element) => action("unhover", el),
+  fill: (el: Element, value: string) => action("fill", el, value),
+  type: (el: Element, value: string) => action("type", el, value),
+  keyboard: (el: Element, value: string) => action("keyboard", el, value),
+  selectOptions: (el: Element, value: string) => action("selectOptions", el, value),
+  focus: (el: Element) => action("focus", el),
+  blur: (el: Element) => action("blur", el),
 };

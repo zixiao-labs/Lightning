@@ -2,30 +2,37 @@
  * Orchestrator: resolve config → discover specs → run files through the selected
  * pool → aggregate reporter output → return summary/exit information.
  */
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { glob } from "tinyglobby";
 import type { FileResult, ResolvedLightningConfig, RunSummary } from "../types.ts";
 import {
   resolveLightningConfigs,
+  resolveRootLightningConfig,
   type ConfigOverrides,
 } from "../config/resolve.ts";
-import { createCoverageReport } from "../coverage/index.ts";
-import { createReporterManager } from "../reporters/index.ts";
+import { reportCoverage } from "./test-server.ts";
+import { createIstanbulCoverageReport } from "../coverage/istanbul.ts";
+import { createReporterManager, type ReporterManager } from "../reporters/index.ts";
 import { createRunSummary } from "../reporters/summary.ts";
 import { runFilesInBrowser } from "../browser/pool.ts";
 import { runFilesInPool } from "./pool.ts";
 import { applyShard } from "./sharding.ts";
+import { detectGlobalOnly } from "./only.ts";
+import { runTypechecks, TYPECHECK_INCLUDE, isTypeTestFile } from "../typecheck/index.ts";
+import { runBenchmarks, BENCH_INCLUDE, formatBenchmarkReport } from "../bench/runner.ts";
 
 async function discover(
   config: ResolvedLightningConfig,
   fileFilters: string[],
+  include = config.include,
+  exclude = config.exclude,
 ): Promise<string[]> {
-  const matches = await glob(config.include, {
+  const matches = await glob(include, {
     cwd: config.root,
-    ignore: config.exclude,
+    ignore: exclude,
     absolute: true,
     dot: false,
+    followSymbolicLinks: false,
   });
   const normalized = matches.map((m) => m.split(path.sep).join("/")).sort();
   if (fileFilters.length === 0) return normalized;
@@ -35,78 +42,40 @@ async function discover(
   );
 }
 
-async function detectGlobalOnly(files: string[]): Promise<boolean> {
-  const pattern = /\b(?:test|it|describe)\s*\.\s*only\s*\(/;
-  for (const file of files) {
-    try {
-      if (pattern.test(await readFile(file, "utf-8"))) return true;
-    } catch {
-      // Loading the file later will surface the real error; only detection is best-effort.
-    }
-  }
-  return false;
-}
-
 export interface RunResult {
   summary: RunSummary;
   files: FileResult[];
 }
 
-function mergeSummaries(summaries: RunSummary[]): RunSummary {
-  return summaries.reduce<RunSummary>(
-    (acc, summary) => ({
-      totalFiles: acc.totalFiles + summary.totalFiles,
-      failedFiles: acc.failedFiles + summary.failedFiles,
-      passedTests: acc.passedTests + summary.passedTests,
-      failedTests: acc.failedTests + summary.failedTests,
-      skippedTests: acc.skippedTests + summary.skippedTests,
-      todoTests: acc.todoTests + summary.todoTests,
-      durationMs: acc.durationMs + summary.durationMs,
-    }),
-    {
-      totalFiles: 0,
-      failedFiles: 0,
-      passedTests: 0,
-      failedTests: 0,
-      skippedTests: 0,
-      todoTests: 0,
-      durationMs: 0,
-    },
-  );
-}
-
 async function runSingleConfig(
   config: ResolvedLightningConfig,
   overrides: ConfigOverrides,
-  fileFilters: string[],
-): Promise<RunResult> {
-  const reporter = await createReporterManager(config);
-  const discovered = await discover(config, fileFilters);
-  const files = applyShard(discovered, config.shard);
-  const hasGlobalOnly = await detectGlobalOnly(files);
-  const start = performance.now();
-
-  await reporter.onStart(files.length, config.root);
-
+  files: string[],
+  typeFiles: string[],
+  hasGlobalOnly: boolean,
+  reporter: ReporterManager,
+): Promise<FileResult[]> {
   const onFileDone = (file: FileResult) => reporter.onFileDone(file);
   const fileResults = config.browser.enabled
     ? await runFilesInBrowser({ config, files, hasGlobalOnly, onFileDone })
     : await runFilesInPool({ config, overrides, files, hasGlobalOnly, onFileDone });
+  const typeResults = await runTypechecks(typeFiles, config, config.typecheck);
+  for (const file of typeResults) await onFileDone(file);
+  fileResults.push(...typeResults);
 
-  let summary = createRunSummary(fileResults, performance.now() - start);
-
-  // Browser mode collects no V8 scripts (see pool warning); an empty report
-  // would only trip thresholds spuriously.
-  if (config.coverage.enabled && !config.browser.enabled) {
+  if (config.coverage.enabled) {
     const scripts = fileResults.flatMap((file) => file.coverage ?? []);
-    const report = await createCoverageReport(config, scripts);
+    const report = config.coverage.provider === "istanbul"
+      ? await createIstanbulCoverageReport(config, fileResults.map((file) => file.istanbulCoverage ?? {}))
+      : await reportCoverage(config, scripts);
     if (report.thresholdErrors.length > 0) {
-      summary = { ...summary, failedFiles: Math.max(summary.failedFiles, 1) };
+      const failure: FileResult = { filepath: path.join(config.root, "coverage"), results: [], durationMs: 0, error: { message: report.thresholdErrors.join("\n") } };
+      fileResults.push(failure);
+      await reporter.onFileDone(failure);
     }
   }
 
-  await reporter.onFinished(fileResults, summary);
-  return { summary, files: fileResults };
+  return fileResults;
 }
 
 export async function runTests(
@@ -114,12 +83,47 @@ export async function runTests(
   fileFilters: string[] = [],
 ): Promise<RunResult> {
   const entries = await resolveLightningConfigs(overrides);
-  const results: RunResult[] = [];
-  for (const entry of entries) {
-    results.push(await runSingleConfig(entry.config, entry.overrides, fileFilters));
+  const rootConfig = await resolveRootLightningConfig(overrides);
+  const reporter = await createReporterManager(rootConfig);
+  const plans = await Promise.all(entries.map(async (entry) => ({
+    ...entry,
+    files: applyShard((await discover(entry.config, fileFilters)).filter((file) => !isTypeTestFile(file)), entry.config.shard),
+    typeFiles: entry.config.typecheck.enabled ? applyShard(await discover(entry.config, fileFilters, TYPECHECK_INCLUDE), entry.config.shard) : [],
+  })));
+  const hasGlobalOnly = await detectGlobalOnly(plans.flatMap((plan) => plan.files));
+  await reporter.onStart(plans.reduce((count, plan) => count + plan.files.length * (plan.config.browser.enabled ? plan.config.browser.browsers.length : 1) + plan.typeFiles.length, 0), rootConfig.root);
+  const start = performance.now();
+  const files: FileResult[] = [];
+  for (const plan of plans) {
+    files.push(...await runSingleConfig(plan.config, plan.overrides, plan.files, plan.typeFiles, hasGlobalOnly, reporter));
   }
-  return {
-    summary: mergeSummaries(results.map((result) => result.summary)),
-    files: results.flatMap((result) => result.files),
-  };
+  const summary = createRunSummary(files, performance.now() - start);
+  await reporter.onFinished(files, summary);
+  return { summary, files };
+}
+
+export async function runBenchmarkTests(
+  overrides: ConfigOverrides = {},
+  fileFilters: string[] = [],
+): Promise<RunResult> {
+  const entries = await resolveLightningConfigs(overrides);
+  const rootConfig = await resolveRootLightningConfig(overrides);
+  const reporter = await createReporterManager(rootConfig);
+  const plans = await Promise.all(entries.map(async ({ config }) => ({
+    config, files: applyShard(await discover(config, fileFilters, BENCH_INCLUDE), config.shard),
+  })));
+  await reporter.onStart(plans.reduce((count, plan) => count + plan.files.length, 0), rootConfig.root);
+  const start = performance.now();
+  const results: FileResult[] = [];
+  const hasGlobalOnly = await detectGlobalOnly(plans.flatMap((plan) => plan.files), "bench");
+  for (const { config, files } of plans) {
+    if (config.browser.enabled) throw new Error("Benchmarks currently require the Node runner; disable browser mode.");
+    const fileResults = await runBenchmarks(files, config, { ...config.benchmark, hasGlobalOnly });
+    for (const file of fileResults) await reporter.onFileDone(file);
+    results.push(...fileResults);
+  }
+  if (rootConfig.reporters.includes("default") || rootConfig.reporters.includes("verbose")) console.log(formatBenchmarkReport(results));
+  const summary = createRunSummary(results, performance.now() - start);
+  await reporter.onFinished(results, summary);
+  return { files: results, summary };
 }

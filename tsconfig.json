@@ -8,6 +8,8 @@
     "paths": {
       "@lightning-js/lightning": ["src/index.ts"],
       "@lightning-js/lightning/browser": ["src/browser/public.ts"],
+      "@lightning-js/lightning/config": ["src/config/index.ts"],
+      "@lightning-js/lightning/globals": ["src/globals.ts"],
     },
     "sourceMap": true,
     "declaration": true,

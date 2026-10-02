@@ -76,9 +76,13 @@ export interface V8CoverageScript {
   scriptId: string;
   url: string;
   functions: V8CoverageFunction[];
+  /** Exact evaluated JavaScript, never the original TypeScript text. */
+  source?: string;
+  /** Raw source map for the evaluated JavaScript. */
+  sourceMap?: { version: number; sources: string[]; names: string[]; mappings: string; sourcesContent?: (string | null)[]; sourceRoot?: string };
 }
 
-export type CoverageProvider = "v8";
+export type CoverageProvider = "v8" | "istanbul";
 export type CoverageReporter = "text" | "html" | "lcov" | "json";
 
 export interface CoverageOptions {
@@ -108,15 +112,24 @@ export interface ShardOptions {
 export interface ProjectConfig extends NastiConfig {
   /** Optional display name used by reporters. */
   name?: string;
+  /** Inline projects inherit by default; false opts out of root defaults. */
+  extends?: boolean;
+  projects?: ProjectEntry[];
   test?: TestOptions;
 }
+export type ProjectEntry = ProjectConfig | string;
+export type ProjectName = string | { label: string; color?: string };
 
-export interface Hook {
-  type: "beforeAll" | "afterAll" | "beforeEach" | "afterEach";
-  fn: () => void | Promise<void>;
-}
+export type HookReturn = void | (() => void | Promise<void>);
+export type Hook =
+  | { type: "beforeAll" | "afterAll"; fn: () => HookReturn | Promise<HookReturn> }
+  | { type: "beforeEach" | "afterEach"; fn: (context: import("./runtime/context.ts").TestContext) => HookReturn | Promise<HookReturn> };
 
 export interface RunnableOptions {
+  skip?: boolean;
+  only?: boolean;
+  todo?: boolean;
+  fails?: boolean;
   /** Run this suite/test in the concurrent lane when possible. */
   concurrent?: boolean;
   /** Force sequential execution even under a concurrent parent suite. */
@@ -133,7 +146,7 @@ export interface Test extends RunnableOptions {
   type: "test";
   name: string;
   mode: TaskMode;
-  fn: () => void | Promise<void>;
+  fn: (context: import("./runtime/context.ts").TestContext) => void | Promise<void>;
   suite: Suite;
 }
 
@@ -174,6 +187,8 @@ export interface FileResult {
   /** Absolute path to the spec file. */
   filepath: string;
   results: TestResult[];
+  /** Errors that escaped test/hook promises; these always fail the file. */
+  unhandledErrors?: TestError[];
   /** A collection/import-time error (file failed before any test ran). */
   error?: TestError;
   durationMs: number;
@@ -185,6 +200,8 @@ export interface FileResult {
   projectName?: string;
   /** Raw V8 script coverage collected for this file, when coverage is enabled. */
   coverage?: V8CoverageScript[];
+  /** Instrumented original-source counters from the optional Istanbul provider. */
+  istanbulCoverage?: Record<string, unknown>;
 }
 
 export interface RunSummary {
@@ -210,6 +227,17 @@ export interface TestOptions {
   include?: string[];
   /** Glob(s) excluded from discovery. */
   exclude?: string[];
+  /** Display name and inline projects, matching Vitest's current config shape. */
+  name?: ProjectName;
+  projects?: ProjectEntry[];
+  /** Maximum files executing concurrently. poolOptions remains a legacy alias. */
+  maxWorkers?: number;
+  /** Run declaration test files through TypeScript, never through the runtime. */
+  typecheck?: { enabled?: boolean; tsconfig?: string };
+  /** Benchmark JSON baseline paths and maximum allowed throughput regression (%). */
+  benchmark?: { baseline?: string; compare?: string; threshold?: number };
+  /** Output file for machine-readable reporters, or a path per reporter. */
+  outputFile?: string | Partial<Record<BuiltinReporter, string>>;
   /** Inject `test`/`expect`/... onto `globalThis` (Vitest `globals`). Default false. */
   globals?: boolean;
   /** Default per-test timeout in ms. Default 5000. */
@@ -246,7 +274,7 @@ export interface TestOptions {
 export interface LightningConfig extends NastiConfig {
   test?: TestOptions;
   /** Multi-project config. Each project is resolved and run with inherited defaults. */
-  projects?: ProjectConfig[];
+  projects?: ProjectEntry[];
 }
 
 /** Fully-resolved config the orchestrator runs against. */
@@ -254,6 +282,9 @@ export interface ResolvedLightningConfig {
   root: string;
   include: string[];
   exclude: string[];
+  typecheck: { enabled: boolean; tsconfig?: string };
+  benchmark: { baseline?: string; compare?: string; threshold?: number };
+  outputFile?: string | Partial<Record<BuiltinReporter, string>>;
   globals: boolean;
   testTimeout: number;
   testNamePattern?: RegExp;

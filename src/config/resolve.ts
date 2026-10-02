@@ -7,6 +7,8 @@
 import { existsSync } from "node:fs";
 import { availableParallelism, cpus } from "node:os";
 import path from "node:path";
+import { stat } from "node:fs/promises";
+import { glob } from "tinyglobby";
 import type {
   CoverageOptions,
   CoverageProvider,
@@ -22,6 +24,9 @@ import type {
   TestPool,
 } from "../types.ts";
 import { createMockTransformPlugin } from "../mock/index.ts";
+import { createCompatibilityPlugin } from "../node/compatibility.ts";
+import { mapJestConfig } from "./compat.ts";
+import { createIstanbulCoveragePlugin } from "../coverage/istanbul.ts";
 import { importConfig } from "./load.ts";
 import type {
   BrowserName,
@@ -34,6 +39,13 @@ const CONFIG_NAMES = [
   "lightning.config.mts",
   "lightning.config.js",
   "lightning.config.mjs",
+  "vitest.config.ts",
+  "vitest.config.mts",
+  "vitest.config.js",
+  "vitest.config.mjs",
+  "jest.config.ts",
+  "jest.config.mjs",
+  "jest.config.js",
 ];
 
 const DEFAULT_INCLUDE = ["**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}"];
@@ -49,6 +61,7 @@ const DEFAULT_COVERAGE_EXCLUDE = [
   "**/__tests__/**",
   "**/__fixtures__/**",
   "**/coverage/**",
+  "**/*.{test,spec}-d.ts",
 ];
 const DEFAULT_COVERAGE_INCLUDE = ["**/*.{js,mjs,cjs,ts,mts,cts,jsx,tsx}"];
 
@@ -79,6 +92,13 @@ export interface ConfigOverrides {
   coverageReporter?: CoverageReporter[];
   coverageReportsDirectory?: string;
   shard?: ShardOptions;
+  typecheck?: boolean;
+  tsconfig?: string;
+  benchmarkBaseline?: string;
+  benchmarkCompare?: string;
+  benchmarkThreshold?: number;
+  project?: string;
+  outputFile?: string;
   /** Internal: selected project when a worker resolves config from a projects array. */
   projectIndex?: number;
 }
@@ -86,6 +106,10 @@ export interface ConfigOverrides {
 interface LoadedConfig {
   cwd: string;
   config: LightningConfig;
+}
+
+function displayName(name: TestOptions["name"]): string | undefined {
+  return typeof name === "string" ? name : name?.label;
 }
 
 function findConfigFile(root: string, explicit?: string): string | undefined {
@@ -111,7 +135,13 @@ async function loadConfigFile(
   file: string,
 ): Promise<LightningConfig> {
   const mod = await importConfig(file);
-  return (mod.default ?? mod.config ?? {}) as LightningConfig;
+  const config = await (mod.default ?? mod.config ?? {});
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error(`Config ${file} must export an object; config factory functions are not supported.`);
+  }
+  return /(?:^|[/\\])jest\.config\./.test(file)
+    ? mapJestConfig(config as Record<string, unknown>)
+    : config as LightningConfig;
 }
 
 async function loadConfig(overrides: ConfigOverrides): Promise<LoadedConfig> {
@@ -137,6 +167,13 @@ function defaultMaxWorkers(): number {
   return Math.max(1, count - 1);
 }
 
+function integerOption(value: number, name: string, minimum = 0): number {
+  if (!Number.isInteger(value) || value < minimum) {
+    throw new Error(`Invalid ${name}: ${String(value)}. Expected an integer >= ${minimum}.`);
+  }
+  return value;
+}
+
 const VALID_POOLS: readonly TestPool[] = ["threads", "forks", "inline"];
 const VALID_ENVIRONMENTS: readonly TestEnvironment[] = [
   "node",
@@ -144,7 +181,7 @@ const VALID_ENVIRONMENTS: readonly TestEnvironment[] = [
   "happy-dom",
   "edge-runtime",
 ];
-const VALID_COVERAGE_PROVIDERS: readonly CoverageProvider[] = ["v8"];
+const VALID_COVERAGE_PROVIDERS: readonly CoverageProvider[] = ["v8", "istanbul"];
 const VALID_COVERAGE_REPORTERS: readonly CoverageReporter[] = [
   "text",
   "html",
@@ -211,7 +248,8 @@ function resolveBrowser(
   return { enabled, provider, browsers: [...new Set(browsers)], headless };
 }
 
-function resolveShard(shard: ShardOptions | undefined): ShardOptions | undefined {  if (!shard) return undefined;
+function resolveShard(shard: ShardOptions | undefined): ShardOptions | undefined {
+  if (!shard) return undefined;
   const { index, count } = shard;
   if (
     !Number.isInteger(index) ||
@@ -297,6 +335,8 @@ function mergeTestOptions(
       ...(base?.browser ?? {}),
       ...(project?.browser ?? {}),
     },
+    typecheck: { ...(base?.typecheck ?? {}), ...(project?.typecheck ?? {}) },
+    benchmark: { ...(base?.benchmark ?? {}), ...(project?.benchmark ?? {}) },
   };
 }
 
@@ -328,6 +368,8 @@ function resolveOne(
     test: _omitProjectTest,
     root: _omitProjectRoot,
     name: _omitProjectName,
+    projects: _omitProjectProjects,
+    extends: _omitExtends,
     ...projectNasti
   } = project ?? {};
 
@@ -341,14 +383,19 @@ function resolveOne(
   const namePattern = toRegExp(
     overrides.testNamePattern ?? fileTest.testNamePattern,
   );
-  const maxWorkers = Math.max(
-    1,
+  const maxWorkers = integerOption(
     overrides.maxWorkers ??
+      fileTest.maxWorkers ??
       fileTest.poolOptions?.maxWorkers ??
       defaultMaxWorkers(),
+    "maxWorkers", 1,
   );
   const pool = resolvePool(overrides.pool ?? fileTest.pool);
+  const tsconfig = overrides.tsconfig ?? fileTest.typecheck?.tsconfig;
+  const outputFile = overrides.outputFile ?? fileTest.outputFile;
+  const projectName = displayName(project?.test?.name) ?? project?.name ?? displayName(fileTest.name);
   const nastiPlugins = [
+    createCompatibilityPlugin(),
     createMockTransformPlugin(),
     ...(baseNasti.plugins ?? []),
     ...(projectNasti.plugins ?? []),
@@ -358,23 +405,34 @@ function resolveOne(
     root,
     include: fileTest.include ?? DEFAULT_INCLUDE,
     exclude: fileTest.exclude ?? DEFAULT_EXCLUDE,
+    typecheck: {
+      enabled: overrides.typecheck ?? fileTest.typecheck?.enabled ?? false,
+      ...(tsconfig ? { tsconfig } : {}),
+    },
+    benchmark: {
+      ...fileTest.benchmark,
+      ...(overrides.benchmarkBaseline ? { baseline: overrides.benchmarkBaseline } : {}),
+      ...(overrides.benchmarkCompare ? { compare: overrides.benchmarkCompare } : {}),
+      ...(overrides.benchmarkThreshold !== undefined ? { threshold: overrides.benchmarkThreshold } : {}),
+    },
+    ...(outputFile ? { outputFile } : {}),
     globals: overrides.globals ?? fileTest.globals ?? false,
-    testTimeout: overrides.testTimeout ?? fileTest.testTimeout ?? 5000,
+    testTimeout: integerOption(overrides.testTimeout ?? fileTest.testTimeout ?? 5000, "testTimeout"),
     reporters: overrides.reporter
       ? [overrides.reporter]
       : normalizeReporters(fileTest.reporters),
     pool,
     poolOptions: { maxWorkers },
     isolate: overrides.isolate ?? fileTest.isolate ?? true,
-    retry: Math.max(0, overrides.retry ?? fileTest.retry ?? 0),
-    repeats: Math.max(1, overrides.repeats ?? fileTest.repeats ?? 1),
+    retry: integerOption(overrides.retry ?? fileTest.retry ?? 0, "retry"),
+    repeats: integerOption(overrides.repeats ?? fileTest.repeats ?? 1, "repeats", 1),
     updateSnapshots: overrides.update ?? fileTest.update ?? false,
     snapshotDir: fileTest.snapshotDir ?? "__snapshots__",
     environment: resolveEnvironment(overrides.environment ?? fileTest.environment),
     browser: resolveBrowser(fileTest.browser, overrides),
     coverage,
     ...(shard ? { shard } : {}),
-    ...(project?.name ? { projectName: project.name } : {}),
+    ...(projectName ? { projectName } : {}),
     nasti: {
       ...baseNasti,
       ...projectNasti,
@@ -386,38 +444,96 @@ function resolveOne(
     },
   };
   if (namePattern) resolved.testNamePattern = namePattern;
+  if (coverage.enabled && coverage.provider === "istanbul") {
+    resolved.nasti.plugins = [createIstanbulCoveragePlugin(resolved), ...(resolved.nasti.plugins ?? [])];
+  }
   if (projectIndex !== undefined && !resolved.projectName) {
     resolved.projectName = `project-${projectIndex + 1}`;
   }
   return resolved;
 }
 
-export async function resolveLightningConfig(
-  overrides: ConfigOverrides = {},
-): Promise<ResolvedLightningConfig> {
-  const loaded = await loadConfig(overrides);
-  const projects = loaded.config.projects ?? [];
-  if (overrides.projectIndex !== undefined) {
-    const project = projects[overrides.projectIndex];
-    if (!project) {
-      throw new Error(`Project index out of range: ${overrides.projectIndex}`);
+/** Expand paths deterministically; workers reconstruct the same flattened index. */
+async function expandProjects(loaded: LoadedConfig): Promise<ProjectConfig[] | undefined> {
+  const rootEntries = loaded.config.test?.projects ?? loaded.config.projects;
+  if (!rootEntries?.length) return undefined;
+  const leaves: ProjectConfig[] = [];
+  async function walk(base: LightningConfig, cwd: string, entries: NonNullable<LightningConfig["projects"]>, names: string[], stack: Set<string>): Promise<void> {
+    for (const entry of entries) {
+      let children: Array<{ config: ProjectConfig; cwd: string; path?: string }> = [];
+      if (typeof entry === "string") {
+        const paths = await glob(entry, {
+          cwd, absolute: true, onlyFiles: false,
+          ignore: ["**/node_modules/**", "**/dist/**", "**/.git/**", "**/.nasti/**"],
+        });
+        if (!paths.length) throw new Error(`Project path matched no files or directories: ${entry}`);
+        for (const matched of paths.sort()) {
+          const directory = (await stat(matched)).isDirectory();
+          const file = directory ? findConfigFile(matched) : matched;
+          const childCwd = directory ? matched : path.dirname(matched);
+          const config = file ? await loadConfigFile(file) : {};
+          children.push({ config: { ...config, root: resolveRoot(childCwd, config.root) }, cwd: childCwd, ...(file ? { path: file } : {}) });
+        }
+      } else if (entry && typeof entry === "object") {
+        children = [{ config: entry, cwd }];
+      } else throw new Error("Projects must be config objects or path/glob strings.");
+      for (const child of children) {
+        if (child.path && stack.has(child.path)) throw new Error(`Circular project configuration: ${child.path}`);
+        const nextStack = new Set(stack);
+        if (child.path) nextStack.add(child.path);
+        const inherit = child.config.extends !== false;
+        const { test: _baseTest, projects: _baseProjects, ...baseNasti } = base;
+        const { test: _childTest, projects: _childProjects, extends: _extends, ...childNasti } = child.config;
+        const effective: ProjectConfig = {
+          ...(inherit ? baseNasti : {}),
+          ...childNasti,
+          root: resolveRoot(child.cwd, child.config.root ?? (inherit ? base.root : undefined)),
+          plugins: [...(inherit ? base.plugins ?? [] : []), ...(child.config.plugins ?? [])],
+          test: mergeTestOptions(inherit ? base.test : undefined, child.config.test),
+        };
+        delete effective.test!.projects;
+        const ownName = displayName(child.config.test?.name) ?? child.config.name;
+        const pathNames = ownName ? [...names, ownName] : names;
+        const nested = child.config.test?.projects ?? child.config.projects;
+        if (nested?.length) await walk(effective, child.cwd, nested, pathNames, nextStack);
+        else {
+          if (pathNames.length) effective.test!.name = pathNames.length === 1 ? pathNames[0]! : `${pathNames[0]} (${pathNames.slice(1).join(" > ")})`;
+          leaves.push(effective);
+        }
+      }
     }
-    return resolveOne(loaded, overrides, project, overrides.projectIndex);
   }
-  return resolveOne(loaded, overrides, undefined, undefined);
+  await walk(loaded.config, loaded.cwd, rootEntries, [], new Set());
+  return leaves;
 }
 
 export async function resolveLightningConfigs(
   overrides: ConfigOverrides = {},
 ): Promise<Array<{ config: ResolvedLightningConfig; overrides: ConfigOverrides }>> {
   const loaded = await loadConfig(overrides);
-  const projects = loaded.config.projects ?? [];
-  if (projects.length === 0) {
-    return [{ config: resolveOne(loaded, overrides, undefined, undefined), overrides }];
-  }
-
-  return projects.map((project, index) => ({
-    config: resolveOne(loaded, overrides, project, index),
+  const projects = await expandProjects(loaded);
+  const entries = projects ? projects.map((project, index) => ({
+    config: resolveOne({ cwd: loaded.cwd, config: {} }, overrides, project, index),
     overrides: { ...overrides, projectIndex: index },
-  }));
+  })) : [{ config: resolveOne(loaded, overrides, undefined, undefined), overrides }];
+  if (overrides.projectIndex !== undefined) {
+    const selected = entries[overrides.projectIndex];
+    if (!selected) throw new Error(`Project index out of range: ${overrides.projectIndex}`);
+    return [selected];
+  }
+  const names = entries.map((entry) => entry.config.projectName).filter(Boolean);
+  if (new Set(names).size !== names.length) throw new Error("Project names must be unique.");
+  if (!overrides.project) return entries;
+  const selected = entries.filter((entry) => entry.config.projectName === overrides.project || entry.config.projectName?.startsWith(`${overrides.project} (`));
+  if (!selected.length) throw new Error(`Unknown project: ${overrides.project}`);
+  return selected;
+}
+
+export async function resolveLightningConfig(overrides: ConfigOverrides = {}): Promise<ResolvedLightningConfig> {
+  return (await resolveLightningConfigs(overrides))[0]!.config;
+}
+
+/** Reporters belong to the root run, not to individual project executions. */
+export async function resolveRootLightningConfig(overrides: ConfigOverrides = {}): Promise<ResolvedLightningConfig> {
+  return resolveOne(await loadConfig(overrides), overrides, undefined, undefined);
 }

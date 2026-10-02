@@ -84,16 +84,21 @@ async function importErrorDetail(testUrl, error) {
 
 async function main() {
   const start = performance.now();
+  let unhandled;
+  let restoreGlobals;
+  let runner;
   try {
     const configResponse = await fetch("/__lightning__/config?token=" + encodeURIComponent(token));
     if (!configResponse.ok) throw new Error("failed to fetch run config: HTTP " + configResponse.status);
     const cfg = await configResponse.json();
 
     const api = await import("${LIGHTNING_API_URL}");
-    const runner = api.__lightning_browser__;
+    runner = api.__lightning_browser__;
+    unhandled = runner.captureBrowserErrors();
+    if (cfg.coverageProvider === "istanbul") runner.startIstanbulCoverage();
 
     runner.startSnapshotSession({ data: cfg.snapshot.data, update: cfg.snapshot.update });
-    if (cfg.globals) runner.installGlobals();
+    if (cfg.globals) restoreGlobals = runner.installGlobals();
     runner.startCollection();
 
     let collected;
@@ -117,6 +122,10 @@ async function main() {
       },
     });
 
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (const [index, error] of unhandled.errors.entries()) {
+      results.push({ fullName: "Unhandled error " + (index + 1), state: "fail", durationMs: 0, error });
+    }
     const snapshot = runner.finishSnapshotSession();
     runner.cleanupViState();
 
@@ -124,6 +133,7 @@ async function main() {
       token,
       durationMs: performance.now() - start,
       results: safeResults(results),
+      ...(cfg.coverageProvider === "istanbul" ? { istanbulCoverage: runner.finishIstanbulCoverage() } : {}),
       ...(snapshot ? { snapshot } : {}),
     });
   } catch (error) {
@@ -132,6 +142,11 @@ async function main() {
       durationMs: performance.now() - start,
       error: safeError(error),
     });
+  } finally {
+    unhandled?.close();
+    restoreGlobals?.();
+    runner?.cleanupViState();
+    runner?.cleanupContainers();
   }
 }
 

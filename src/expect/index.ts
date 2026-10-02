@@ -1,5 +1,9 @@
 import { inspect } from "../utils/inspect.ts";
+import { deepEqual, isAsymmetricMatcher, type AsymmetricMatcherInterface } from "../utils/equality.ts";
+export { deepEqual, type AsymmetricMatcherInterface } from "../utils/equality.ts";
 import { isMockFunction } from "../mock/index.ts";
+import { isWhenChain } from "../mock/when.ts";
+import { getExecutionScope, withExecutionScope, type ExecutionScope } from "../runtime/context.ts";
 import {
   addSnapshotSerializer,
   matchSnapshot,
@@ -44,25 +48,50 @@ interface MatcherContext {
 
 const customMatchers = new Map<string, CustomMatcher>();
 
-interface AssertionState {
+export interface AssertionState {
   count: number;
   expected?: number;
   requireAssertions: boolean;
   softErrors: LightningAssertionError[];
+  asyncAssertions?: Array<{ awaited: boolean }>;
 }
 
-let assertionState: AssertionState = {
+let fallbackAssertionState: AssertionState = {
   count: 0,
   requireAssertions: false,
   softErrors: [],
 };
 
+const assertionState = new Proxy({} as AssertionState, {
+  get: (_target, key) => Reflect.get(getExecutionScope()?.assertionState ?? fallbackAssertionState, key),
+  set: (_target, key, value) => Reflect.set(getExecutionScope()?.assertionState ?? fallbackAssertionState, key, value),
+});
+
+/** Bind both assertion calls and matcher invocation for browser concurrency. */
+export function createScopedExpect(scope: ExecutionScope): ExpectStatic {
+  const bind = (value: any): any => {
+    if (value instanceof Promise) return value;
+    if (typeof value !== "function" && (typeof value !== "object" || value === null)) return value;
+    return new Proxy(value, {
+      apply: (target, receiver, args) => withExecutionScope(scope, () => bind(Reflect.apply(target, receiver, args))),
+      get: (target, key) => bind(Reflect.get(target, key)),
+    });
+  };
+  return bind(expect);
+}
+
 export function startTestAssertions(): void {
-  assertionState = { count: 0, requireAssertions: false, softErrors: [] };
+  const next = { count: 0, requireAssertions: false, softErrors: [] };
+  const scope = getExecutionScope();
+  if (scope) scope.assertionState = next;
+  else fallbackAssertionState = next;
 }
 
 export function finishTestAssertions(): void {
   const errors = [...assertionState.softErrors];
+  if (assertionState.asyncAssertions?.some(item => !item.awaited)) {
+    errors.push(new LightningAssertionError("Async assertion was not awaited. Use await or return the assertion promise."));
+  }
   if (
     assertionState.expected !== undefined &&
     assertionState.count !== assertionState.expected
@@ -92,6 +121,25 @@ function recordAssertion(): void {
   assertionState.count++;
 }
 
+function trackAsyncAssertion<T>(promise: Promise<T>): Promise<T> {
+  const state = getExecutionScope()?.assertionState as AssertionState | undefined;
+  if (!state) return promise;
+  const entry = { awaited: false };
+  (state.asyncAssertions ??= []).push(entry);
+  // Keep abandoned rejections from becoming process-level unhandled errors.
+  void promise.catch(() => {});
+  return new Proxy(promise, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        if (key === "then" || key === "catch" || key === "finally") entry.awaited = true;
+        return Reflect.apply(value, target, args);
+      };
+    },
+  });
+}
+
 export function getState(): AssertionState {
   return {
     count: assertionState.count,
@@ -104,7 +152,7 @@ export function getState(): AssertionState {
 }
 
 export function setState(next: Partial<AssertionState>): void {
-  assertionState = { ...assertionState, ...next };
+  Object.assign(assertionState, next);
 }
 
 function stringify(value: unknown): string {
@@ -121,21 +169,6 @@ function stringify(value: unknown): string {
 }
 
 // ---- asymmetric matchers ----------------------------------------------------
-
-export interface AsymmetricMatcherInterface {
-  asymmetricMatch(value: unknown): boolean;
-  toString(): string;
-}
-
-function isAsymmetricMatcher(
-  value: unknown,
-): value is AsymmetricMatcherInterface {
-  return Boolean(
-    value &&
-    typeof value === "object" &&
-    typeof (value as AsymmetricMatcherInterface).asymmetricMatch === "function",
-  );
-}
 
 class AnythingMatcher implements AsymmetricMatcherInterface {
   asymmetricMatch(value: unknown): boolean {
@@ -211,72 +244,6 @@ class StringMatchingMatcher implements AsymmetricMatcherInterface {
   toString(): string {
     return "StringMatching";
   }
-}
-
-/** Structural deep equality with asymmetric matcher support. */
-export function deepEqual(a: unknown, b: unknown): boolean {
-  if (isAsymmetricMatcher(b)) return b.asymmetricMatch(a);
-  if (Object.is(a, b)) return true;
-  if (
-    typeof a !== "object" ||
-    typeof b !== "object" ||
-    a === null ||
-    b === null
-  )
-    return false;
-
-  if (a instanceof Date || b instanceof Date) {
-    return (
-      a instanceof Date && b instanceof Date && a.getTime() === b.getTime()
-    );
-  }
-  if (a instanceof RegExp || b instanceof RegExp) {
-    return (
-      a instanceof RegExp &&
-      b instanceof RegExp &&
-      a.source === b.source &&
-      a.flags === b.flags
-    );
-  }
-  if (a instanceof Map || b instanceof Map) {
-    if (!(a instanceof Map) || !(b instanceof Map) || a.size !== b.size)
-      return false;
-    for (const [key, value] of a) {
-      if (!b.has(key) || !deepEqual(value, b.get(key))) return false;
-    }
-    return true;
-  }
-  if (a instanceof Set || b instanceof Set) {
-    if (!(a instanceof Set) || !(b instanceof Set) || a.size !== b.size)
-      return false;
-    const remaining = [...b];
-    return [...a].every((actual) => {
-      const index = remaining.findIndex((expected) =>
-        deepEqual(actual, expected),
-      );
-      if (index === -1) return false;
-      remaining.splice(index, 1);
-      return true;
-    });
-  }
-
-  const aArr = Array.isArray(a);
-  const bArr = Array.isArray(b);
-  if (aArr !== bArr) return false;
-
-  const aKeys = Reflect.ownKeys(a);
-  const bKeys = Reflect.ownKeys(b);
-  if (aKeys.length !== bKeys.length) return false;
-  return aKeys.every(
-    (key) =>
-      Object.prototype.propertyIsEnumerable.call(a, key) ===
-        Object.prototype.propertyIsEnumerable.call(b, key) &&
-      Object.prototype.hasOwnProperty.call(b, key) &&
-      deepEqual(
-        (a as Record<PropertyKey, unknown>)[key],
-        (b as Record<PropertyKey, unknown>)[key],
-      ),
-  );
 }
 
 function subsetEqual(actual: unknown, expected: unknown): boolean {
@@ -378,6 +345,7 @@ const baseMatcherNames = [
   "toBeInstanceOf",
   "toBeTypeOf",
   "toHaveBeenCalled",
+  "toHaveBeenExhausted",
   "toHaveBeenCalledTimes",
   "toHaveBeenCalledWith",
   "toHaveBeenLastCalledWith",
@@ -759,6 +727,13 @@ function buildSyncMatchers(
       );
     },
 
+    toHaveBeenExhausted() {
+      if (!isWhenChain(actual)) throw new TypeError("toHaveBeenExhausted expects a vi.when chain");
+      check(actual.exhausted, negated, soft,
+        () => "expected all vi.when actions to have been exhausted",
+        () => "expected some vi.when actions not to have been exhausted");
+    },
+
     toHaveBeenCalled() {
       ensureMock(actual);
       check(
@@ -937,7 +912,9 @@ function buildSyncMatchers(
         result &&
         typeof (result as Promise<MatcherResult>).then === "function"
       ) {
-        return (result as Promise<MatcherResult>).then(handle);
+        const scope = getExecutionScope();
+        return trackAsyncAssertion((result as Promise<MatcherResult>).then(result =>
+          scope ? withExecutionScope(scope, () => handle(result)) : handle(result)));
       }
       handle(result as MatcherResult);
     };
@@ -991,46 +968,52 @@ function buildAsyncMatchers(
     },
   };
   for (const name of [...baseMatcherNames, ...customMatchers.keys()]) {
-    (asyncMatchers as Record<string, unknown>)[name] = async (
+    (asyncMatchers as Record<string, unknown>)[name] = (
       ...args: unknown[]
     ) => {
-      const value = await getActual();
-      if (
-        promiseMode === "rejects" &&
-        (name === "toThrow" || name === "toThrowError")
-      ) {
-        const expected = args[0] as
-          | string
-          | RegExp
-          | ErrorConstructor
-          | Error
-          | undefined;
-        check(
-          matchesThrown(value, expected),
-          negated,
-          soft,
-          () =>
-            `expected promise rejection to throw ${expected === undefined ? "" : stringify(expected)}`.trim(),
-          () =>
-            `expected promise rejection not to throw ${expected === undefined ? "" : stringify(expected)}`.trim(),
-        );
-        return;
-      }
-      const matcher = (
-        buildSyncMatchers(value, negated, soft) as Record<
-          string,
-          ((...a: unknown[]) => unknown) | undefined
-        >
-      )[name];
-      if (!matcher) throw new Error(`Unknown matcher: ${String(name)}`);
-      return matcher(...args);
+      const scope = getExecutionScope();
+      return trackAsyncAssertion((async () => {
+        const value = await getActual();
+        const execute = () => {
+          if (
+            promiseMode === "rejects" &&
+            (name === "toThrow" || name === "toThrowError")
+          ) {
+            const expected = args[0] as
+              | string
+              | RegExp
+              | ErrorConstructor
+              | Error
+              | undefined;
+            check(
+              matchesThrown(value, expected),
+              negated,
+              soft,
+              () =>
+                `expected promise rejection to throw ${expected === undefined ? "" : stringify(expected)}`.trim(),
+              () =>
+                `expected promise rejection not to throw ${expected === undefined ? "" : stringify(expected)}`.trim(),
+            );
+            return;
+          }
+          const matcher = (
+            buildSyncMatchers(value, negated, soft) as Record<
+              string,
+              ((...a: unknown[]) => unknown) | undefined
+            >
+          )[name];
+          if (!matcher) throw new Error(`Unknown matcher: ${String(name)}`);
+          return matcher(...args);
+        };
+        return scope ? withExecutionScope(scope, execute) : execute();
+      })());
     };
   }
   return asyncMatchers as Matchers;
 }
 
 function buildPollMatchers(
-  factory: () => unknown | Promise<unknown>,
+  factory: (context: { signal: AbortSignal }) => unknown | Promise<unknown>,
   options: { timeout?: number; interval?: number },
   negated: boolean,
   soft: boolean,
@@ -1041,41 +1024,71 @@ function buildPollMatchers(
     get not() {
       return buildPollMatchers(factory, options, !negated, soft);
     },
-    get resolves() {
-      return buildAsyncMatchers(async () => factory(), negated, soft).resolves;
+    get resolves(): Matchers {
+      throw new Error("expect.poll does not support resolves");
     },
-    get rejects() {
-      return buildAsyncMatchers(async () => factory(), negated, soft).rejects;
+    get rejects(): Matchers {
+      throw new Error("expect.poll does not support rejects");
     },
   };
   for (const name of [...baseMatcherNames, ...customMatchers.keys()]) {
-    (pollMatchers as Record<string, unknown>)[name] = async (
+    (pollMatchers as Record<string, unknown>)[name] = (
       ...args: unknown[]
     ) => {
-      const deadline = Date.now() + timeout;
-      let lastError: unknown;
-      while (Date.now() <= deadline) {
+      const scope = getExecutionScope();
+      return trackAsyncAssertion((async () => {
+        const deadline = Date.now() + timeout;
+        const controller = new AbortController();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const expired = new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            controller.abort();
+            reject(new LightningAssertionError(`expect.poll timed out in ${timeout}ms`));
+          }, timeout);
+        });
+        let lastError: unknown;
         try {
-          const value = await factory();
-          const matcher = (
-            buildSyncMatchers(value, negated, false) as Record<
-              string,
-              ((...a: unknown[]) => unknown) | undefined
-            >
-          )[name];
-          if (!matcher) throw new Error(`Unknown matcher: ${String(name)}`);
-          await matcher(...args);
-          return;
-        } catch (error) {
-          lastError = error;
-          await new Promise((resolve) => setTimeout(resolve, interval));
+          while (Date.now() <= deadline) {
+            try {
+              const value = await Promise.race([
+                Promise.resolve().then(() => factory({ signal: controller.signal })),
+                expired,
+              ]);
+              const matcher = (
+                buildSyncMatchers(value, negated, false) as Record<
+                  string,
+                  ((...a: unknown[]) => unknown) | undefined
+                >
+              )[name];
+              if (!matcher) throw new Error(`Unknown matcher: ${String(name)}`);
+              const invoke = () => matcher(...args);
+              await Promise.race([
+                Promise.resolve(scope ? withExecutionScope(scope, invoke) : invoke()),
+                expired,
+              ]);
+              return;
+            } catch (error) {
+              lastError = error;
+              if (controller.signal.aborted) break;
+              await Promise.race([
+                new Promise((resolve) => setTimeout(resolve, interval)),
+                expired,
+              ]);
+            }
+          }
+          if (lastError instanceof LightningAssertionError && soft) {
+            const error = lastError;
+            const record = () => { assertionState.softErrors.push(error); };
+            if (scope) withExecutionScope(scope, record);
+            else record();
+            return;
+          }
+          throw lastError ?? new LightningAssertionError(`expect.poll timed out in ${timeout}ms`);
+        } finally {
+          clearTimeout(timer);
+          controller.abort();
         }
-      }
-      if (lastError instanceof LightningAssertionError) {
-        if (soft) assertionState.softErrors.push(lastError);
-        else throw lastError;
-      }
-      throw lastError;
+      })());
     };
   }
   return pollMatchers as Matchers;
@@ -1093,7 +1106,7 @@ export interface ExpectStatic {
   (actual: unknown): Matchers;
   soft(actual: unknown): Matchers;
   poll(
-    factory: () => unknown | Promise<unknown>,
+    factory: (context: { signal: AbortSignal }) => unknown | Promise<unknown>,
     options?: { timeout?: number; interval?: number },
   ): Matchers;
   extend(matchers: Record<string, CustomMatcher>): void;
@@ -1116,7 +1129,7 @@ export const expect = Object.assign(
   {
     soft: (actual: unknown) => buildMatchers(actual, false, true),
     poll: (
-      factory: () => unknown | Promise<unknown>,
+      factory: (context: { signal: AbortSignal }) => unknown | Promise<unknown>,
       options: { timeout?: number; interval?: number } = {},
     ) => buildPollMatchers(factory, options, false, false),
     extend(matchers: Record<string, CustomMatcher>) {

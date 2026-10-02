@@ -22,6 +22,7 @@ import type {
   ResolvedLightningConfig,
   TestError,
   TestResult,
+  V8CoverageScript,
 } from "../types.ts";
 import {
   readSnapshotData,
@@ -35,6 +36,8 @@ import {
   loadPlaywrightModule,
   type PlaywrightBrowser,
   type PlaywrightContext,
+  type PlaywrightPage,
+  type BrowserAction,
 } from "./provider.ts";
 
 export interface BrowserPoolOptions {
@@ -42,6 +45,50 @@ export interface BrowserPoolOptions {
   files: string[];
   hasGlobalOnly: boolean;
   onFileDone: (file: FileResult) => void | Promise<void>;
+  /** Watch owns a long-lived client server; ordinary runs create their own. */
+  server?: Awaited<ReturnType<typeof createServer>>;
+  hub?: BrowserTestHub;
+  signal?: AbortSignal;
+}
+
+export async function installBrowserInput(page: PlaywrightPage): Promise<void> {
+  await page.exposeBinding("__lightning_input__", async (_source, action: BrowserAction) => {
+    const target = page.locator(action.selector);
+    switch (action.method) {
+      case "click": await target.click(); break;
+      case "dblClick": await target.dblclick(); break;
+      case "hover": await target.hover(); break;
+      case "unhover": await page.mouse.move(-1, -1); break;
+      case "fill": await target.fill(action.value ?? ""); break;
+      case "type": await target.pressSequentially(action.value ?? ""); break;
+      case "keyboard": await target.press(action.value ?? ""); break;
+      case "selectOptions": await target.selectOption(action.value ?? ""); break;
+      case "focus": await target.focus(); break;
+      case "blur": await target.evaluate((el) => el.blur()); break;
+      default: throw new Error(`Unknown browser input action: ${action.method}`);
+    }
+  });
+}
+
+function coverageScripts(entries: Awaited<ReturnType<PlaywrightPage["coverage"]["stopJSCoverage"]>>, origin: string, root: string): V8CoverageScript[] {
+  return entries.filter((entry) => entry.url.startsWith(`${origin}/`)).map((entry, index) => {
+    const pathname = decodeURIComponent(new URL(entry.url).pathname);
+    const url = pathname.startsWith("/@fs/") ? pathname.slice(4) : path.join(root, pathname);
+    const match = entry.source?.match(/\/\/[#@]\s*sourceMappingURL=data:application\/json[^,]*;base64,([A-Za-z0-9+/=]+)/);
+    let sourceMap: {
+      version: number;
+      sources: string[];
+      names: string[];
+      mappings: string;
+      sourcesContent?: Array<string | null>;
+    } | undefined;
+    if (match) sourceMap = JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8"));
+    return {
+      scriptId: String(index), url, functions: entry.functions,
+      ...(entry.source === undefined ? {} : { source: entry.source }),
+      ...(sourceMap === undefined ? {} : { sourceMap }),
+    };
+  });
 }
 
 function specUrl(root: string, file: string): string {
@@ -97,6 +144,7 @@ async function safeOnFileDone(
 
 interface FileRunContext {
   config: ResolvedLightningConfig;
+  server: Awaited<ReturnType<typeof createServer>>;
   hub: BrowserTestHub;
   origin: string;
   browser: PlaywrightBrowser;
@@ -123,6 +171,7 @@ async function runFileInBrowser(
     repeats: config.repeats,
     hasGlobalOnly: ctx.hasGlobalOnly,
     globals: config.globals,
+    ...(config.coverage.enabled && config.coverage.provider === "istanbul" ? { coverageProvider: "istanbul" as const } : {}),
     ...(config.testNamePattern
       ? {
           namePattern: {
@@ -173,18 +222,33 @@ async function runFileInBrowser(
   });
   const crashed = new Promise<never>((_, reject) => {
     page.on("crash", () => reject(new Error(`browser page crashed while running ${relFile}`)));
+    page.on("close", () => reject(new Error(`browser page closed while running ${relFile}`)));
   });
   // A crash landing after the race settles (e.g. during teardown) must not
   // become an unhandled rejection; the race itself still sees the original.
   crashed.catch(() => undefined);
 
   try {
+    await installBrowserInput(page);
+    if (config.coverage.enabled && config.coverage.provider === "v8") await page.coverage.startJSCoverage({ resetOnNavigation: false });
     await page.goto(`${origin}/__lightning__/?token=${encodeURIComponent(token)}`);
     const message: BrowserResultMessage = await Promise.race([
       pendingResult,
       watchdog,
       crashed,
     ]);
+    const coverage = config.coverage.enabled && config.coverage.provider === "v8"
+      ? coverageScripts(await page.coverage.stopJSCoverage(), origin, config.root)
+      : undefined;
+    // Nasti serves maps separately from module code. Attach the map only when
+    // it belongs to the exact JavaScript Playwright measured.
+    for (const script of coverage ?? []) {
+      if (script.sourceMap || !/\.[cm]?[jt]sx?$/.test(script.url)) continue;
+      const transformed = await ctx.server.transformRequest(specUrl(config.root, script.url));
+      if (transformed && typeof transformed !== "string" && transformed.map && transformed.code === script.source) {
+        script.sourceMap = JSON.parse(JSON.stringify(transformed.map));
+      }
+    }
 
     if (message.snapshot?.dirty) {
       writeSnapshotData(snapshotPath, message.snapshot.data);
@@ -198,6 +262,8 @@ async function runFileInBrowser(
         : {}),
       durationMs: performance.now() - start,
       browser: browserName,
+      ...(coverage ? { coverage } : {}),
+      ...(message.istanbulCoverage ? { istanbulCoverage: message.istanbulCoverage } : {}),
       ...(config.projectName ? { projectName: config.projectName } : {}),
     };
   } finally {
@@ -213,25 +279,23 @@ export async function runFilesInBrowser(
 ): Promise<FileResult[]> {
   const { config, files, hasGlobalOnly, onFileDone } = options;
 
-  if (config.coverage.enabled) {
-    console.warn(
-      c.yellow("⚡️ coverage is not supported in browser mode yet — skipping collection"),
-    );
+  if (config.coverage.enabled && config.coverage.provider === "v8" && config.browser.browsers.some((name) => name !== "chromium")) {
+    throw new Error("Browser JavaScript coverage requires Chromium; Firefox and WebKit coverage are not supported.");
   }
 
-  const hub = new BrowserTestHub();
+  const hub = options.hub ?? new BrowserTestHub();
   const results: FileResult[] = [];
-  const server = await createServer({
+  const server = options.server ?? await createServer({
     ...config.nasti,
     plugins: [createBrowserApiPlugin(), ...(config.nasti.plugins ?? [])],
   });
 
   try {
     // Port 0 → OS-assigned; Nasti records the actual port on its config.
-    await server.listen(0);
+    if (!options.server) await server.listen(0);
     const port = server.config.server.port;
     const origin = `http://localhost:${port}`;
-    server.middlewares.use("/__lightning__", hub.handler);
+    if (!options.server) server.middlewares.use("/__lightning__", hub.handler);
 
     const playwright = await loadPlaywrightModule(config.root);
 
@@ -241,10 +305,14 @@ export async function runFilesInBrowser(
         throw new Error(`Playwright does not expose a "${browserName}" browser`);
       }
       const browser = await browserType.launch({ headless: config.browser.headless });
+      const abort = () => { void browser.close().catch(() => undefined); };
+      options.signal?.addEventListener("abort", abort, { once: true });
+      if (options.signal?.aborted) abort();
       try {
         const sharedContext = config.isolate ? undefined : await browser.newContext();
         const ctx: FileRunContext = {
           config,
+          server,
           hub,
           origin,
           browser,
@@ -254,6 +322,7 @@ export async function runFilesInBrowser(
         };
         try {
           for (const file of files) {
+            if (options.signal?.aborted) break;
             const result = await runFileInBrowser(ctx, file).catch(
               (error): FileResult => ({
                 filepath: file,
@@ -271,11 +340,12 @@ export async function runFilesInBrowser(
           await sharedContext?.close().catch(() => undefined);
         }
       } finally {
+        options.signal?.removeEventListener("abort", abort);
         await browser.close().catch(() => undefined);
       }
     }
   } finally {
-    await server.close().catch(() => undefined);
+    if (!options.server) await server.close().catch(() => undefined);
   }
 
   return results;

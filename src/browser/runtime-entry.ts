@@ -17,7 +17,10 @@ export {
   afterEach,
 } from "../runtime/collect.ts";
 export { expect, LightningAssertionError } from "../expect/index.ts";
-export { vi, fn, spyOn, isMockFunction } from "../mock/index.ts";
+export { vi, vi as jest, fn, spyOn, isMockFunction } from "../mock/index.ts";
+export { onTestFinished, onTestFailed } from "../runtime/context.ts";
+export { expectTypeOf, assertType } from "../type-testing.ts";
+export { defineProject } from "../config/define.ts";
 export { render, cleanup, userEvent, type RenderResult } from "./public.ts";
 
 import type { LightningConfig } from "../types.ts";
@@ -36,6 +39,28 @@ import {
   startSnapshotSession,
 } from "../snapshot/core.ts";
 import { cleanup } from "./public.ts";
+import { getExecutionScope } from "../runtime/context.ts";
+import { startIstanbulCoverage, finishIstanbulCoverage } from "../coverage/istanbul-core.ts";
+
+function captureBrowserErrors() {
+  const errors: Array<{ message: string; stack?: string }> = [];
+  const record = (value: unknown, kind: string) => {
+    const name = getExecutionScope()?.snapshotName;
+    const message = `${kind}${name ? ` in "${name}"` : ""}: ${value instanceof Error ? value.message : String(value)}`;
+    errors.push({ message, ...(value instanceof Error && value.stack ? { stack: value.stack } : {}) });
+  };
+  const rejection = (event: PromiseRejectionEvent) => { record(event.reason, "Unhandled rejection"); event.preventDefault(); };
+  const exception = (event: ErrorEvent) => { record(event.error ?? event.message, "Uncaught exception"); event.preventDefault(); };
+  window.addEventListener("unhandledrejection", rejection);
+  window.addEventListener("error", exception);
+  return {
+    errors,
+    close() {
+      window.removeEventListener("unhandledrejection", rejection);
+      window.removeEventListener("error", exception);
+    },
+  };
+}
 
 /**
  * Internal surface for the tester page's inline entry script (`./client.ts`).
@@ -53,4 +78,7 @@ export const __lightning_browser__ = {
   /** Per-test cleanup: rendered containers + per-file vi teardown at file end. */
   cleanupContainers: cleanup,
   cleanupViState,
+  captureBrowserErrors,
+  startIstanbulCoverage,
+  finishIstanbulCoverage,
 };

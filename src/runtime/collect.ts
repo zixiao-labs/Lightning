@@ -6,6 +6,7 @@
  * register into a fresh root suite.
  */
 import type { Hook, RunnableOptions, Suite, TaskMode, Test } from "../types.ts";
+import { describeBench } from "../bench/index.ts";
 
 function createSuite(
   name: string,
@@ -59,8 +60,13 @@ function addTest(
     mode,
     fn,
     suite: currentSuite,
+    ...(currentSuite.timeout === undefined ? {} : { timeout: currentSuite.timeout }),
+    ...(currentSuite.retry === undefined ? {} : { retry: currentSuite.retry }),
+    ...(currentSuite.repeats === undefined ? {} : { repeats: currentSuite.repeats }),
     ...options,
   };
+  test.mode = options.skip ? "skip" : options.todo ? "todo" : options.only ? "only" : mode;
+  if (test.mode === "only") hasOnly = true;
   currentSuite.tasks.push(test);
 }
 
@@ -71,7 +77,14 @@ function addSuite(
   options: RunnableOptions = {},
 ): void {
   if (mode === "only") hasOnly = true;
-  const suite = createSuite(name, mode, currentSuite, options);
+  mode = options.skip ? "skip" : options.todo ? "todo" : options.only ? "only" : mode;
+  if (mode === "only") hasOnly = true;
+  const suite = createSuite(name, mode, currentSuite, {
+    ...(currentSuite.timeout === undefined ? {} : { timeout: currentSuite.timeout }),
+    ...(currentSuite.retry === undefined ? {} : { retry: currentSuite.retry }),
+    ...(currentSuite.repeats === undefined ? {} : { repeats: currentSuite.repeats }),
+    ...options,
+  });
   currentSuite.tasks.push(suite);
   const prev = currentSuite;
   currentSuite = suite;
@@ -84,24 +97,30 @@ function addSuite(
 }
 
 function addHook(type: Hook["type"], fn: Hook["fn"]): void {
-  currentSuite.hooks.push({ type, fn });
+  currentSuite.hooks.push({ type, fn } as Hook);
 }
 
 // ---- public `test` / `it` --------------------------------------------------
 
-type TestFn = () => void | Promise<void>;
+type TestFn = Test["fn"];
 
 type TestCase<T> = T extends readonly unknown[] ? T : [T];
 
 type TestFactory<T> = (...args: TestCase<T>) => void | Promise<void>;
 
 export interface TestAPI {
+  (name: string): void;
   (name: string, fn: TestFn, timeout?: number): void;
+  (name: string, options: RunnableOptions, fn?: TestFn): void;
   skip: TestAPI;
   only: TestAPI;
   todo: (name: string, fn?: TestFn) => void;
   concurrent: TestAPI;
   sequential: TestAPI;
+  fails: TestAPI;
+  skipIf: (condition: unknown) => TestAPI;
+  runIf: (condition: unknown) => TestAPI;
+  for: <T>(cases: readonly T[]) => (name: string, fn: (value: T, context: import("./context.ts").TestContext) => void | Promise<void>) => void;
   each: <T>(cases: readonly T[]) => (name: string, fn: TestFactory<T>) => void;
   retry: (times: number) => TestAPI;
   repeats: (times: number) => TestAPI;
@@ -160,15 +179,18 @@ function createTestApi(
   mode: TaskMode = "run",
   options: RunnableOptions = {},
 ): TestAPI {
-  const api = ((name: string, fn: TestFn, timeout?: number) => {
-    const nextOptions =
-      timeout === undefined ? options : { ...options, timeout };
-    addTest(name, fn, mode, nextOptions);
+  const api = ((name: string, fnOrOptions?: TestFn | RunnableOptions, timeoutOrFn?: number | TestFn) => {
+    const nextOptions = typeof fnOrOptions === "function"
+      ? { ...options, ...(typeof timeoutOrFn === "number" ? { timeout: timeoutOrFn } : {}) }
+      : { ...options, ...fnOrOptions };
+    const fn = typeof fnOrOptions === "function" ? fnOrOptions : timeoutOrFn as TestFn | undefined;
+    addTest(name, fn ?? (() => {}), fn ? mode : "todo", nextOptions);
   }) as TestAPI;
 
   Object.defineProperties(api, {
     skip: { get: () => createTestApi("skip", options) },
     only: { get: () => createTestApi("only", options) },
+    fails: { get: () => createTestApi(mode, { ...options, fails: true }) },
     concurrent: {
       get: () =>
         createTestApi(mode, {
@@ -189,6 +211,14 @@ function createTestApi(
   api.todo = (name: string, fn?: TestFn) =>
     addTest(name, fn ?? (() => {}), "todo", options);
   api.each = makeEach(mode, options);
+  api.skipIf = condition => createTestApi(condition ? "skip" : mode, options);
+  api.runIf = condition => createTestApi(condition ? mode : "skip", options);
+  api.for = cases => (name, fn) => {
+    cases.forEach((value, index) => addTest(
+      formatEachName(name, normalizeCase(value), index),
+      context => fn(value, context), mode, options,
+    ));
+  };
   api.retry = (times: number) =>
     createTestApi(mode, { ...options, retry: Math.max(0, times) });
   api.repeats = (times: number) =>
@@ -203,11 +233,17 @@ export const it: TestAPI = test;
 
 export interface DescribeAPI {
   (name: string, factory: () => void): void;
+  (name: string, options: RunnableOptions, factory: () => void): void;
   skip: DescribeAPI;
   only: DescribeAPI;
   todo: (name: string, factory?: () => void) => void;
   concurrent: DescribeAPI;
   sequential: DescribeAPI;
+  skipIf: (condition: unknown) => DescribeAPI;
+  runIf: (condition: unknown) => DescribeAPI;
+  /** Legacy top-level benchmarking suites; context.bench is the current API. */
+  bench: typeof describeBench;
+  for: <T>(cases: readonly T[]) => (name: string, factory: (value: T) => void) => void;
   each: <T>(
     cases: readonly T[],
   ) => (name: string, factory: (...args: TestCase<T>) => void) => void;
@@ -232,8 +268,9 @@ function createDescribeApi(
   mode: TaskMode = "run",
   options: RunnableOptions = {},
 ): DescribeAPI {
-  const api = ((name: string, factory: () => void) =>
-    addSuite(name, factory, mode, options)) as DescribeAPI;
+  const api = ((name: string, factoryOrOptions: (() => void) | RunnableOptions, factory?: () => void) =>
+    addSuite(name, typeof factoryOrOptions === "function" ? factoryOrOptions : factory,
+      mode, typeof factoryOrOptions === "function" ? options : { ...options, ...factoryOrOptions })) as DescribeAPI;
   Object.defineProperties(api, {
     skip: { get: () => createDescribeApi("skip", options) },
     only: { get: () => createDescribeApi("only", options) },
@@ -257,6 +294,15 @@ function createDescribeApi(
   api.todo = (name: string, factory?: () => void) =>
     addSuite(name, factory, "todo", options);
   api.each = makeDescribeEach(mode, options);
+  api.bench = mode === "skip" ? describeBench.skip as typeof describeBench
+    : mode === "only" ? describeBench.only as typeof describeBench : describeBench;
+  api.skipIf = condition => createDescribeApi(condition ? "skip" : mode, options);
+  api.runIf = condition => createDescribeApi(condition ? mode : "skip", options);
+  api.for = cases => (name, factory) => {
+    cases.forEach((value, index) => addSuite(
+      formatEachName(name, normalizeCase(value), index), () => factory(value), mode, options,
+    ));
+  };
   return api;
 }
 
@@ -264,7 +310,7 @@ export const describe: DescribeAPI = createDescribeApi();
 
 // ---- hooks -----------------------------------------------------------------
 
-export const beforeAll = (fn: Hook["fn"]) => addHook("beforeAll", fn);
-export const afterAll = (fn: Hook["fn"]) => addHook("afterAll", fn);
-export const beforeEach = (fn: Hook["fn"]) => addHook("beforeEach", fn);
-export const afterEach = (fn: Hook["fn"]) => addHook("afterEach", fn);
+export const beforeAll = (fn: Extract<Hook, { type: "beforeAll" | "afterAll" }>["fn"]) => addHook("beforeAll", fn);
+export const afterAll = (fn: Extract<Hook, { type: "beforeAll" | "afterAll" }>["fn"]) => addHook("afterAll", fn);
+export const beforeEach = (fn: Extract<Hook, { type: "beforeEach" | "afterEach" }>["fn"]) => addHook("beforeEach", fn);
+export const afterEach = (fn: Extract<Hook, { type: "beforeEach" | "afterEach" }>["fn"]) => addHook("afterEach", fn);

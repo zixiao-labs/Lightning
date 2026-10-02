@@ -9,7 +9,7 @@ import type {
   TestError,
 } from "../types.ts";
 import { runTestFile } from "../runtime/file-runner.ts";
-import { createOneShotServer } from "./one-shot-server.ts";
+import { createTestServer } from "./test-server.ts";
 import type { WorkerRequest, WorkerResponse } from "./rpc.ts";
 
 function toError(value: unknown): TestError {
@@ -55,7 +55,7 @@ async function runThread(
       };
       const onExit = (code: number) => {
         cleanup();
-        if (code !== 0) reject(new Error(`worker exited with code ${code}`));
+        reject(new Error(`worker exited with code ${code} before reporting a result`));
       };
       const cleanup = () => {
         worker.off("message", onMessage);
@@ -106,8 +106,7 @@ async function runFork(
       };
       const onExit = (code: number | null) => {
         cleanup();
-        if (code !== 0)
-          reject(new Error(`forked worker exited with code ${code}`));
+        reject(new Error(`forked worker exited with code ${code} before reporting a result`));
       };
       const cleanup = () => {
         child.off("message", onMessage);
@@ -151,14 +150,14 @@ async function runInline(
   const results: FileResult[] = [];
   const sharedServer = config.isolate
     ? undefined
-    : await createOneShotServer(config.nasti);
+    : await createTestServer(config);
   try {
     for (const file of files) {
-      let server: Awaited<ReturnType<typeof createOneShotServer>> | undefined =
+      let server: Awaited<ReturnType<typeof createTestServer>> | undefined =
         sharedServer;
       let result: FileResult;
       try {
-        server ??= await createOneShotServer(config.nasti);
+        server ??= await createTestServer(config);
         result = await runTestFile({
           config,
           file,
@@ -202,7 +201,7 @@ export async function runFilesInPool(
   options: RunPoolOptions,
 ): Promise<FileResult[]> {
   const { config, overrides, files, hasGlobalOnly, onFileDone } = options;
-  if (config.pool === "inline" || files.length <= 1 || !config.isolate) {
+  if (config.pool === "inline" || !config.isolate) {
     return runInline(config, files, hasGlobalOnly, onFileDone);
   }
 

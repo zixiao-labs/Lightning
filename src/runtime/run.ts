@@ -5,10 +5,16 @@
  *  - `beforeAll`/`afterAll` run once per suite (before/after its tasks),
  *  - `beforeEach` run outer→inner before every test, `afterEach` inner→outer after.
  */
-import type { Suite, Test, TestError, TestResult } from "../types.ts";
-import { finishTestAssertions, startTestAssertions } from "../expect/index.ts";
+import type { Hook, Suite, Test, TestError, TestResult } from "../types.ts";
+import { createScopedExpect, finishTestAssertions, startTestAssertions } from "../expect/index.ts";
+import { withExecutionScope, supportsConcurrentScopes, type ExecutionScope } from "./context.ts";
+
+// Runner deadlines must not be replaced by a test's fake clock.
+const deadlineSetTimeout = globalThis.setTimeout;
+const deadlineClearTimeout = globalThis.clearTimeout;
 
 export interface RunOptions {
+  createBenchmarkContext?: () => import("../bench/context.ts").BenchmarkContext;
   hasOnly: boolean;
   defaultTimeout: number;
   /** Only run tests whose full dotted name matches. */
@@ -29,14 +35,15 @@ function toError(value: unknown): TestError {
   return { message: typeof value === "string" ? value : String(value) };
 }
 
-function withTimeout(
-  fn: () => void | Promise<void>,
+function withTimeout<T>(
+  fn: () => T | Promise<T>,
   ms: number,
   label: string,
-): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
+): Promise<T> {
+  if (ms === 0) return Promise.resolve().then(fn);
+  return new Promise<T>((resolve, reject) => {
     let settled = false;
-    const timer = setTimeout(() => {
+    const timer = deadlineSetTimeout(() => {
       if (settled) return;
       settled = true;
       reject(new Error(`${label} timed out in ${ms}ms`));
@@ -44,16 +51,16 @@ function withTimeout(
     Promise.resolve()
       .then(fn)
       .then(
-        () => {
+        (value) => {
           if (settled) return;
           settled = true;
-          clearTimeout(timer);
-          resolve();
+          deadlineClearTimeout(timer);
+          resolve(value);
         },
         (err) => {
           if (settled) return;
           settled = true;
-          clearTimeout(timer);
+          deadlineClearTimeout(timer);
           reject(err);
         },
       );
@@ -101,6 +108,7 @@ function hasActiveTest(
 }
 
 function isTestActive(test: Test, inOnly: boolean, opts: RunOptions): boolean {
+  if (test.mode === "skip" || test.mode === "todo") return false;
   if (opts.hasOnly && !(inOnly || test.mode === "only")) return false;
   if (opts.namePattern) {
     opts.namePattern.lastIndex = 0;
@@ -119,8 +127,8 @@ export async function runSuiteTree(
 async function runSuite(
   suite: Suite,
   opts: RunOptions,
-  beforeEachChain: Array<() => void | Promise<void>>,
-  afterEachChain: Array<() => void | Promise<void>>,
+  beforeEachChain: Array<Hook["fn"]>,
+  afterEachChain: Array<Hook["fn"]>,
   inOnly: boolean,
   inheritedConcurrent: boolean,
 ): Promise<TestResult[]> {
@@ -139,12 +147,19 @@ async function runSuite(
     ...afterEachChain,
   ];
 
+  let setupFailed = false;
+  const suiteCleanups: Array<() => void | Promise<void>> = [];
   if (active) {
     try {
-      for (const h of suite.hooks.filter((h) => h.type === "beforeAll"))
-        await h.fn();
+      for (const h of suite.hooks.filter(
+        (h): h is Extract<Hook, { type: "beforeAll" | "afterAll" }> => h.type === "beforeAll",
+      )) {
+        const cleanup = await h.fn();
+        if (typeof cleanup === "function") suiteCleanups.push(cleanup);
+      }
     } catch (error) {
-      return markFailedActive(suite, opts, inOnly, toError(error));
+      results.push(...markFailedActive(suite, opts, inOnly, toError(error)));
+      setupFailed = true;
     }
   }
 
@@ -157,6 +172,7 @@ async function runSuite(
 
   for (const task of suite.tasks) {
     if (task.type === "suite") {
+      if (setupFailed) break;
       await flushConcurrent();
       const childInOnly = inOnly || task.mode === "only";
       if (task.mode === "skip" || task.mode === "todo") {
@@ -176,11 +192,12 @@ async function runSuite(
         )),
       );
     } else {
+      if (setupFailed) break;
       const testConcurrent = task.sequential
         ? false
         : (task.concurrent ?? suiteConcurrent);
       const run = () => runTest(task, opts, beforeEach, afterEach, inOnly);
-      if (testConcurrent) concurrentQueue.push(run());
+      if (testConcurrent && supportsConcurrentScopes) concurrentQueue.push(run());
       else {
         await flushConcurrent();
         results.push(...(await run()));
@@ -191,9 +208,15 @@ async function runSuite(
   await flushConcurrent();
 
   if (active) {
-    for (const h of suite.hooks.filter((h) => h.type === "afterAll")) {
+    const cleanupFns = [
+      ...suite.hooks.filter(
+        (h): h is Extract<Hook, { type: "beforeAll" | "afterAll" }> => h.type === "afterAll",
+      ).map(h => h.fn),
+      ...suiteCleanups.reverse(),
+    ];
+    for (const fn of cleanupFns) {
       try {
-        await h.fn();
+        await fn();
       } catch (error) {
         results.push({
           fullName: `${suiteName(suite)} > afterAll`,
@@ -237,13 +260,15 @@ function markFailedActive(
       } else {
         results.push({
           fullName: fullName(task),
-          state: "skip",
+          state: task.mode === "todo" ? "todo" : "skip",
           durationMs: 0,
         });
       }
     } else {
       const childInOnly = inOnly || task.mode === "only";
-      results.push(...markFailedActive(task, opts, childInOnly, error));
+      results.push(...(task.mode === "skip" || task.mode === "todo"
+        ? markSkipped(task, task.mode === "todo" ? "todo" : "skip")
+        : markFailedActive(task, opts, childInOnly, error)));
     }
   }
   return results;
@@ -252,8 +277,8 @@ function markFailedActive(
 async function runTest(
   test: Test,
   opts: RunOptions,
-  beforeEach: Array<() => void | Promise<void>>,
-  afterEach: Array<() => void | Promise<void>>,
+  beforeEach: Array<Hook["fn"]>,
+  afterEach: Array<Hook["fn"]>,
   inOnly: boolean,
 ): Promise<TestResult[]> {
   const name = fullName(test);
@@ -287,8 +312,8 @@ async function runWithRetry(
   test: Test,
   displayName: string,
   opts: RunOptions,
-  beforeEach: Array<() => void | Promise<void>>,
-  afterEach: Array<() => void | Promise<void>>,
+  beforeEach: Array<Hook["fn"]>,
+  afterEach: Array<Hook["fn"]>,
   repeatIndex: number,
 ): Promise<TestResult> {
   const retry = Math.max(0, test.retry ?? opts.retry);
@@ -320,49 +345,84 @@ async function runAttempt(
   test: Test,
   displayName: string,
   opts: RunOptions,
-  beforeEach: Array<() => void | Promise<void>>,
-  afterEach: Array<() => void | Promise<void>>,
+  beforeEach: Array<Hook["fn"]>,
+  afterEach: Array<Hook["fn"]>,
   repeatIndex: number,
   attempt: number,
 ): Promise<TestResult> {
-  const timeout = test.timeout ?? opts.defaultTimeout;
-  const start = performance.now();
-  let afterEachStarted = false;
-
-  startTestAssertions();
-  opts.onTestStart?.(displayName);
-  try {
-    for (const fn of beforeEach) await withTimeout(fn, timeout, "BeforeEach");
-    await withTimeout(test.fn, timeout, "Test");
-    afterEachStarted = true;
-    for (const fn of afterEach) await withTimeout(fn, timeout, "AfterEach");
-    finishTestAssertions();
-    await opts.onTestEnd?.(displayName);
-    return {
-      fullName: displayName,
-      state: "pass",
-      durationMs: performance.now() - start,
-      ...(attempt > 0 ? { retryCount: attempt } : {}),
-      ...(repeatIndex > 1 ? { repeatIndex } : {}),
+  const scope: ExecutionScope = { finished: [], failed: [], snapshotName: displayName, snapshotCounts: new Map() };
+  scope.context = {
+    get bench() {
+      if (!opts.createBenchmarkContext) throw new Error("Benchmark context is unavailable in this runner");
+      const bench = opts.createBenchmarkContext();
+      Object.defineProperty(scope.context!, "bench", { value: bench });
+      return bench;
+    },
+    task: test,
+    expect: createScopedExpect(scope),
+    onTestFinished: fn => { scope.finished.push(fn); },
+    onTestFailed: fn => { scope.failed.push(fn); },
+  };
+  return withExecutionScope(scope, async () => {
+    const timeout = test.timeout ?? opts.defaultTimeout;
+    const start = performance.now();
+    let error: unknown;
+    let failed = false;
+    const capture = (err: unknown) => { if (!failed) error = err; failed = true; };
+    const invoke = (fn: Hook["fn"], label: string) =>
+      withExecutionScope(scope, () => withTimeout(() => fn(scope.context!), timeout, label));
+    const invokeHook = async (fn: Hook["fn"], label: string) => {
+      const softCount = scope.assertionState?.softErrors.length ?? 0;
+      try { return await invoke(fn, label); }
+      finally {
+        for (const err of scope.assertionState?.softErrors.slice(softCount) ?? []) capture(err);
+      }
     };
-  } catch (err) {
-    if (!afterEachStarted) {
-      for (const fn of afterEach) {
-        try {
-          await withTimeout(fn, timeout, "AfterEach");
-        } catch {
-          /* preserve the primary failure */
-        }
+    let setupSucceeded = false;
+    let bodyFailed = false;
+    withExecutionScope(scope, startTestAssertions);
+    try {
+      withExecutionScope(scope, () => opts.onTestStart?.(displayName));
+      for (const fn of beforeEach) {
+        const cleanup = await invokeHook(fn, "BeforeEach");
+        if (typeof cleanup === "function") scope.finished.push(cleanup);
+      }
+      setupSucceeded = true;
+      try {
+        await invoke(() => test.fn(scope.context!), "Test");
+      } catch (err) {
+        bodyFailed = true;
+        if (!test.fails) capture(err);
+      }
+    } catch (err) { capture(err); }
+    for (const fn of afterEach) {
+      try { await invokeHook(fn, "AfterEach"); } catch (err) { capture(err); }
+    }
+    if (setupSucceeded) {
+      try { withExecutionScope(scope, finishTestAssertions); }
+      catch (err) {
+        bodyFailed = true;
+        if (!test.fails) capture(err);
+      }
+      if (test.fails && !bodyFailed) capture(new Error("Test was expected to fail, but passed"));
+    }
+    if (failed) {
+      for (const fn of scope.failed.reverse()) {
+        try { await invoke(fn, "onTestFailed"); } catch (err) { capture(err); }
       }
     }
-    await opts.onTestEnd?.(displayName);
+    for (const fn of scope.finished.reverse()) {
+      try { await invoke(fn, "onTestFinished"); } catch (err) { capture(err); }
+    }
+    try { await withExecutionScope(scope, () => opts.onTestEnd?.(displayName)); }
+    catch (err) { capture(err); }
     return {
       fullName: displayName,
-      state: "fail",
+      state: failed ? "fail" : "pass",
       durationMs: performance.now() - start,
-      error: toError(err),
+      ...(failed ? { error: toError(error) } : {}),
       ...(attempt > 0 ? { retryCount: attempt } : {}),
       ...(repeatIndex > 1 ? { repeatIndex } : {}),
     };
-  }
+  });
 }

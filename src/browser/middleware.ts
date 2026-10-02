@@ -24,6 +24,7 @@ export interface BrowserRunPayload {
   repeats: number;
   hasGlobalOnly: boolean;
   globals: boolean;
+  coverageProvider?: "istanbul";
   namePattern?: { source: string; flags: string };
   snapshot: { data: Record<string, string>; update: boolean };
 }
@@ -35,6 +36,7 @@ export interface BrowserResultMessage {
   results?: TestResult[];
   error?: { message: string; stack?: string };
   snapshot?: { data: Record<string, string>; dirty: boolean };
+  istanbulCoverage?: Record<string, unknown>;
 }
 
 interface PendingRun {

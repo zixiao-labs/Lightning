@@ -9,13 +9,15 @@ export default defineConfig([
       cli: "src/cli.ts",
       worker: "src/runtime/worker.ts",
       browser: "src/browser/public.ts",
+      config: "src/config/index.ts",
+      globals: "src/globals.ts",
     },
     format: "esm",
     platform: "node",
     target: "node20",
     dts: true,
     clean: true,
-    external: ["@nasti-toolchain/nasti"],
+    deps: { neverBundle: ["@nasti-toolchain/nasti"] },
   },
   // Browser runtime served verbatim to test pages as the virtual module behind
   // /@modules/@lightning-js/lightning. Built alone so it stays a single
@@ -28,6 +30,7 @@ export default defineConfig([
     target: "es2022",
     dts: false,
     clean: false,
+    deps: { alwaysBundle: ["expect-type"], onlyBundle: ["expect-type"] },
     // Emit .mjs like the node config so plugin.ts can address one filename.
     fixedExtension: true,
   },

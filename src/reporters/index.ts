@@ -1,6 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { resolve } from "import-meta-resolve";
+import { importConfig } from "../config/load.ts";
 import type { BuiltinReporter, FileResult, Reporter, ReporterConfig, ResolvedLightningConfig, RunSummary, TestResult } from "../types.ts";
 import { createDefaultReporter, printSummary } from "./default.ts";
 
@@ -14,28 +16,30 @@ export interface ReporterManager extends Reporter {
 
 export async function createReporterManager(config: ResolvedLightningConfig): Promise<ReporterManager> {
   const reporterConfigs = config.reporters.length ? config.reporters : ["default"];
+  const errors: Error[] = [];
   const reporters = await Promise.all(reporterConfigs.map(async (r) => ({
     label: reporterLabel(r),
     reporter: await resolveReporter(config, r),
   })));
   return {
     async onStart(fileCount, root) {
-      for (const { label, reporter } of reporters) await callReporter(label, "onStart", () => reporter.onStart?.(fileCount, root));
+      for (const { label, reporter } of reporters) await callReporter(label, "onStart", () => reporter.onStart?.(fileCount, root), errors);
     },
     async onFileDone(file) {
-      for (const { label, reporter } of reporters) await callReporter(label, "onFileDone", () => reporter.onFileDone?.(file));
+      for (const { label, reporter } of reporters) await callReporter(label, "onFileDone", () => reporter.onFileDone?.(file), errors);
     },
     async onFinished(files, summary) {
-      for (const { label, reporter } of reporters) await callReporter(label, "onFinished", () => reporter.onFinished?.(files, summary));
+      for (const { label, reporter } of reporters) await callReporter(label, "onFinished", () => reporter.onFinished?.(files, summary), errors);
+      if (errors.length) throw new AggregateError(errors, `Reporter hooks failed:\n${errors.map((error) => error.message).join("\n")}`);
     },
   };
 }
 
-async function callReporter(label: string, hook: keyof Reporter, callback: () => void | Promise<void>): Promise<void> {
+async function callReporter(label: string, hook: keyof Reporter, callback: () => void | Promise<void>, errors: Error[]): Promise<void> {
   try {
     await callback();
   } catch (error) {
-    console.error(`[lightning] reporter '${label}' ${hook} failed:`, error);
+    errors.push(new Error(`Reporter '${label}' ${hook} failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error }));
   }
 }
 
@@ -52,10 +56,13 @@ async function resolveReporter(config: ResolvedLightningConfig, reporter: Report
 async function loadCustomReporter(config: ResolvedLightningConfig, id: string): Promise<Reporter> {
   const specifier = id.startsWith(".") || id.startsWith("/")
     ? pathToFileURL(path.resolve(config.root, id)).href
-    : id;
-  const mod = await import(specifier);
+    : resolve(id, pathToFileURL(path.join(config.root, "package.json")).href);
+  const mod = /\.[cm]?ts$/.test(id) ? await importConfig(path.resolve(config.root, id)) : await import(specifier);
   const candidate = mod.default ?? mod.reporter ?? mod;
-  const reporter = typeof candidate === "function" ? candidate(config) : candidate;
+  const reporter = typeof candidate === "function"
+    ? candidate.prototype?.onFinished || candidate.prototype?.onFileDone || candidate.prototype?.onStart
+      ? new candidate(config) : await candidate(config)
+    : candidate;
   if (!reporter || typeof reporter !== "object") throw new Error(`Custom reporter '${id}' did not export a reporter object`);
   return reporter as Reporter;
 }
@@ -63,7 +70,7 @@ async function loadCustomReporter(config: ResolvedLightningConfig, id: string): 
 function builtinReporter(config: ResolvedLightningConfig, id: BuiltinReporter): Reporter {
   if (id === "default" || id === "verbose") return createDefaultReporter({ root: config.root });
   if (id === "dot") return createDotReporter();
-  if (id === "json") return createJsonReporter();
+  if (id === "json") return createJsonReporter(config);
   if (id === "junit") return createJUnitReporter(config);
   if (id === "tap") return createTapReporter();
   return createGithubActionsReporter(config);
@@ -80,11 +87,33 @@ function createDotReporter(): Reporter {
   };
 }
 
-function createJsonReporter(): Reporter {
+function reporterOutput(config: ResolvedLightningConfig, id: BuiltinReporter): string | undefined {
+  const output = typeof config.outputFile === "string" ? config.outputFile : config.outputFile?.[id];
+  return output ? path.resolve(config.root, output) : undefined;
+}
+
+function createJsonReporter(config: ResolvedLightningConfig): Reporter {
   return {
-    onFinished(files, summary) {
-      const publicFiles = files.map(({ coverage: _coverage, ...file }) => file);
-      console.log(JSON.stringify({ summary, files: publicFiles }, null, 2));
+    async onFinished(files, summary) {
+      const publicFiles = files.map(({ coverage: _coverage, istanbulCoverage: _istanbul, ...file }) => file);
+      const seen = new WeakSet<object>();
+      const json = JSON.stringify({ summary, files: publicFiles }, (_key, value: unknown) => {
+        if (typeof value === "bigint") return `${value}n`;
+        if (typeof value === "function") return `[Function ${value.name}]`;
+        if (typeof value === "object" && value) {
+          if (seen.has(value)) return "[Circular]";
+          seen.add(value);
+          if (value instanceof Error) return { message: value.message, stack: value.stack };
+          if (value instanceof Map) return { type: "Map", entries: [...value] };
+          if (value instanceof Set) return { type: "Set", values: [...value] };
+        }
+        return value;
+      }, 2);
+      const output = reporterOutput(config, "json");
+      if (output) {
+        await mkdir(path.dirname(output), { recursive: true });
+        await writeFile(output, json + "\n");
+      } else console.log(json);
     },
   };
 }
@@ -100,9 +129,9 @@ function createJUnitReporter(config: ResolvedLightningConfig): Reporter {
       const failureCount = tests.filter(({ result }) => result.state === "fail").length + loadErrors.length;
       const skippedCount = tests.filter(({ result }) => result.state === "skip" || result.state === "todo").length;
       const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<testsuites tests="${testCount}" failures="${failureCount}" skipped="${skippedCount}" time="${seconds(summary.durationMs)}">\n  <testsuite name="lightning" tests="${testCount}" failures="${failureCount}" skipped="${skippedCount}" time="${seconds(summary.durationMs)}">\n${entries.join("\n")}\n  </testsuite>\n</testsuites>\n`;
-      const dir = path.join(config.root, "test-results");
-      await mkdir(dir, { recursive: true });
-      await writeFile(path.join(dir, "junit.xml"), xml);
+      const output = reporterOutput(config, "junit") ?? path.join(config.root, "test-results", "junit.xml");
+      await mkdir(path.dirname(output), { recursive: true });
+      await writeFile(output, xml);
     },
   };
 }
