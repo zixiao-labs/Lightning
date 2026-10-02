@@ -71,6 +71,7 @@ const assertionState = new Proxy({} as AssertionState, {
 export function createScopedExpect(scope: ExecutionScope): ExpectStatic {
   const bind = (value: any): any => {
     if (value instanceof Promise) return value;
+    if (isAsymmetricMatcher(value)) return value;
     if (typeof value !== "function" && (typeof value !== "object" || value === null)) return value;
     return new Proxy(value, {
       apply: (target, receiver, args) => withExecutionScope(scope, () => bind(Reflect.apply(target, receiver, args))),

@@ -55,7 +55,7 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
     env = await setupEnvironment(environment);
     if (config.coverage.enabled && config.coverage.provider === "istanbul") startIstanbulCoverage();
     if (config.coverage.enabled && config.coverage.provider === "v8") {
-      coverage = new CoverageSession();
+      coverage = new CoverageSession(config.root);
       await coverage.start();
     }
     if (config.globals) restoreGlobals = installGlobals();

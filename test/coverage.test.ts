@@ -33,6 +33,28 @@ async function scenario(run: (config: ResolvedLightningConfig) => Promise<void>)
 }
 
 describe("source-mapped V8 coverage", () => {
+  test("captures only project scripts and tolerates missing or malformed source maps", async () => {
+    const session = new CoverageSession(root);
+    await session.start();
+    for (const [name, map] of [
+      ["missing.js", "missing.js.map"],
+      ["malformed.js", "data:application/json;base64,bm90IGpzb24="],
+      ["invalid-url.js", "data:application/json,%"],
+    ]) {
+      new Function(`return 1;\n//# sourceURL=${path.join(root, name!)}\n//# sourceMappingURL=${map}`)();
+    }
+    const outside = path.join(`${root.replace(/[/\\]$/, "")}-other`, "external.js");
+    new Function(`return 2;\n//# sourceURL=${outside}\n//# sourceMappingURL=missing.js.map`)();
+    const scripts = await session.stop();
+    for (const name of ["missing.js", "malformed.js", "invalid-url.js"]) {
+      const script = scripts.find((entry) => entry.url === path.join(root, name));
+      expect(script?.source).toContain("return 1");
+      expect(script?.sourceMap).toBeUndefined();
+    }
+    expect(scripts.some((script) => script.url === outside)).toBe(false);
+    expect(await session.stop()).toEqual([]);
+  });
+
   test("validates regenerated maps against real Nasti AsyncFunction source", async () => {
     await scenario(async (config) => {
       const loader = createCoverageSourceLoader(config);

@@ -35,6 +35,8 @@ export class CoverageSession {
   private session: inspector.Session | undefined;
   private maps = new Map<string, string>();
 
+  constructor(private readonly root: string = process.cwd()) {}
+
   async start(): Promise<void> {
     const session = new inspector.Session();
     this.session = session;
@@ -53,14 +55,22 @@ export class CoverageSession {
     if (!session) return [];
     try {
       const { result } = await post<{ result: V8CoverageScript[] }>(session, "Profiler.takePreciseCoverage");
-      for (const script of result) {
-        if (!scriptFile(script.url)) continue;
+      const scripts = result.filter((script) => {
+        const file = scriptFile(script.url);
+        if (!file) return false;
+        const relative = path.relative(this.root, file);
+        return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+      });
+      for (const script of scripts) {
         const evaluated = await post<{ scriptSource: string }>(session, "Debugger.getScriptSource", { scriptId: script.scriptId });
         script.source = evaluated.scriptSource;
         const mapUrl = this.maps.get(script.scriptId);
-        if (mapUrl) script.sourceMap = await loadMap(mapUrl, script.url);
+        if (mapUrl) {
+          try { script.sourceMap = await loadMap(mapUrl, script.url); }
+          catch { /* Missing or invalid maps must not prevent coverage collection. */ }
+        }
       }
-      return result;
+      return scripts;
     } finally {
       await post(session, "Profiler.stopPreciseCoverage").catch(() => undefined);
       await post(session, "Profiler.disable").catch(() => undefined);

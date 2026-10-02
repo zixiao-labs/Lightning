@@ -1,4 +1,3 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { Bench } from "tinybench";
 import type { FileResult, ResolvedLightningConfig, TestResult, Suite } from "../types.ts";
@@ -23,12 +22,11 @@ export interface BenchmarkResult extends TestResult {
 }
 export interface BenchmarkRunOptions {
   hasGlobalOnly?: boolean;
-  baseline?: string;
-  compare?: string;
+  baseline?: BenchmarkBaseline;
   /** Maximum permitted throughput loss, in percent. Default 10. */
   threshold?: number;
 }
-interface Baseline {
+export interface BenchmarkBaseline {
   version: 1;
   benchmarks: Record<string, BenchmarkStats>;
 }
@@ -62,16 +60,12 @@ export function formatBenchmarkReport(files: FileResult[]): string {
   return lines.join("\n");
 }
 /** Collect all entries before measuring so .only applies across files. */
-export async function runBenchmarks(files: string[], config: ResolvedLightningConfig, options: BenchmarkRunOptions = {}): Promise<FileResult[]> {
+export async function runBenchmarks(files: string[], config: ResolvedLightningConfig, options: BenchmarkRunOptions = {}): Promise<{ files: FileResult[]; benchmarks: BenchmarkBaseline["benchmarks"] }> {
   const threshold = options.threshold ?? 10;
   if (!Number.isFinite(threshold) || threshold < 0) throw new Error("Benchmark threshold must be a non-negative finite percentage");
-  let baseline: Baseline | undefined;
-  if (options.compare) {
-    baseline = JSON.parse(await readFile(path.resolve(config.root, options.compare), "utf8")) as Baseline;
-    if (baseline.version !== 1 || !baseline.benchmarks || typeof baseline.benchmarks !== "object") throw new Error("Invalid benchmark baseline");
-  }
+  const baseline = options.baseline;
   const entries: { file: FileResult; tasks: BenchmarkTask[]; root?: Suite; hasOnly?: boolean; server?: Awaited<ReturnType<typeof createOneShotServer>> }[] = [];
-  const output: Baseline = { version: 1, benchmarks: {} };
+  const output: BenchmarkBaseline = { version: 1, benchmarks: {} };
   try {
     for (const filepath of files) {
       const file: FileResult = { filepath, results: [], durationMs: 0, ...(config.projectName ? { projectName: config.projectName } : {}) };
@@ -162,12 +156,7 @@ export async function runBenchmarks(files: string[], config: ResolvedLightningCo
         entry.file.durationMs += result.durationMs;
       }
     }
-    if (options.baseline && !entries.some(({ file }) => file.error || file.results.some((result) => result.state === "fail"))) {
-      const target = path.resolve(config.root, options.baseline);
-      await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, JSON.stringify(output, null, 2) + "\n");
-    }
-    return entries.map((entry) => entry.file);
+    return { files: entries.map((entry) => entry.file), benchmarks: output.benchmarks };
   } finally {
     finishBenchmarkCollection();
     for (const entry of entries) await entry.server?.close();

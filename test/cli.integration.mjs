@@ -70,6 +70,33 @@ test("Vitest config path/glob projects inherit defaults and retain worker indexe
   assert.match(missing.stderr, /Unknown project/);
 });
 
+test("project globs ignore ordinary files and still accept directories and named configs", { timeout: 60000 }, async (t) => {
+  const dir = await fixture(t, {
+    "lightning.config.mjs": config({ test: { projects: ["packages/*"] } }),
+    "packages/README.md": "This is not a project config.",
+    "packages/package.json": '{"private":true}',
+    "packages/helper.mjs": 'throw new Error("ordinary project file evaluated");',
+    "packages/lightning.config.mjs": config({ test: { name: "named config", include: ["direct.test.ts"] } }),
+    "packages/direct.test.ts": simple,
+    "packages/plain/plain.test.ts": simple,
+  });
+  const result = await cli(dir, ["--reporter", "json"]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).files.map((file) => file.projectName), ["named config", "project-2"]);
+});
+
+test("project globs matching only ordinary files retain the no-match error", { timeout: 60000 }, async (t) => {
+  const dir = await fixture(t, {
+    "lightning.config.mjs": config({ test: { projects: ["packages/*"] } }),
+    "packages/README.md": "This is not a project config.",
+    "packages/helper.mjs": 'throw new Error("ordinary project file evaluated");',
+  });
+  const result = await cli(dir, ["--reporter", "json"]);
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /Project path matched no files or directories: packages\/\*/);
+  assert.doesNotMatch(result.stderr, /ordinary project file evaluated/);
+});
+
 test("type testing resolves migrated Vitest imports and typed globals without execution", { timeout: 60000 }, async (t) => {
   const dir = await fixture(t, {
     "lightning.config.mjs": config({ test: { globals: true, typecheck: { enabled: true } } }),

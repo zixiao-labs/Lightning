@@ -67,6 +67,22 @@ check("concurrent assertion counts and soft errors stay scoped across awaits", a
   assert.deepEqual(results.map(result => result.state), ["pass", "fail", "pass"]);
 });
 
+check("scoped asymmetric matchers retain their fields and native methods", async () => {
+  const results = await run(() => {
+    test("asymmetric matchers", ({ expect: local }) => {
+      local.assertions(7);
+      local(1).toEqual(local.any(Number));
+      local("bolt").toEqual(local.stringMatching(/^bolt$/));
+      local("lightning").toEqual(local.stringContaining("light"));
+      local({ value: new Date(0) }).toEqual(local.objectContaining({ value: new Date(0) }));
+      local([new Map([["id", 1]])]).toEqual(local.arrayContaining([new Map([["id", 1]])]));
+      local(new Set([1])).toEqual(local.anything());
+      local({ value: "bolt" }).toEqual({ value: local.stringMatching(/^bolt$/) });
+    });
+  });
+  assert.equal(results[0]?.state, "pass", results[0]?.error?.message);
+});
+
 check("late assertions from a timed-out attempt cannot change the next test", async () => {
   const results = await run(() => {
     test("times out", { timeout: 3 }, async () => {

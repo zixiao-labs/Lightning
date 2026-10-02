@@ -57,7 +57,9 @@ names select nested children. Legacy top-level `projects` and
 
 Reporters run once for the whole invocation, so multi-project JSON is one valid
 document and JUnit contains all project results. Configure reporters/output paths
-at the root. Coverage reports and benchmark baselines remain project-root-relative.
+at the root. Coverage reports remain project-root-relative. Benchmark comparison
+and baseline output paths use the root config's `root`; one baseline contains
+results from all projects.
 Watch one project at a time with `--project`.
 
 ## Runtime

@@ -51,6 +51,18 @@ export async function runTypechecks(
       ...compilerOptions.paths,
     },
   };
+  // Reuse parsed sources within this run, not across subsequent runs or projects.
+  const host = ts.createCompilerHost(resolvedOptions);
+  const getSourceFile = host.getSourceFile.bind(host);
+  const sources = new Map<string, ts.SourceFile>();
+  host.getSourceFile = (file, languageVersion, onError, shouldCreateNewSourceFile) => {
+    const key = host.getCanonicalFileName(path.resolve(file));
+    const cached = sources.get(key);
+    if (cached && !shouldCreateNewSourceFile) return cached;
+    const source = getSourceFile(file, languageVersion, onError, shouldCreateNewSourceFile);
+    if (source) sources.set(key, source);
+    return source;
+  };
   const format = (diagnostic: ts.Diagnostic): string => {
     const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
     if (!diagnostic.file) return `TS${diagnostic.code}: ${message}`;
@@ -61,7 +73,7 @@ export async function runTypechecks(
     const start = performance.now();
     // A program per entry attributes dependency diagnostics to precisely the
     // entries that import them, without failing unrelated type-test files.
-    const program = ts.createProgram([filepath, ...(config.globals ? [packageTypes("./globals")] : [])], resolvedOptions);
+    const program = ts.createProgram([filepath, ...(config.globals ? [packageTypes("./globals")] : [])], resolvedOptions, host);
     const errors = [...configErrors, ...ts.getPreEmitDiagnostics(program)]
       .filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
     return {

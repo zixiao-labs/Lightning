@@ -466,14 +466,16 @@ async function expandProjects(loaded: LoadedConfig): Promise<ProjectConfig[] | u
           cwd, absolute: true, onlyFiles: false,
           ignore: ["**/node_modules/**", "**/dist/**", "**/.git/**", "**/.nasti/**"],
         });
-        if (!paths.length) throw new Error(`Project path matched no files or directories: ${entry}`);
         for (const matched of paths.sort()) {
-          const directory = (await stat(matched)).isDirectory();
+          const stats = await stat(matched);
+          const directory = stats.isDirectory();
+          if (!directory && (!stats.isFile() || !CONFIG_NAMES.includes(path.basename(matched)))) continue;
           const file = directory ? findConfigFile(matched) : matched;
           const childCwd = directory ? matched : path.dirname(matched);
           const config = file ? await loadConfigFile(file) : {};
           children.push({ config: { ...config, root: resolveRoot(childCwd, config.root) }, cwd: childCwd, ...(file ? { path: file } : {}) });
         }
+        if (!children.length) throw new Error(`Project path matched no files or directories: ${entry}`);
       } else if (entry && typeof entry === "object") {
         children = [{ config: entry, cwd }];
       } else throw new Error("Projects must be config objects or path/glob strings.");

@@ -3,6 +3,7 @@
  * pool → aggregate reporter output → return summary/exit information.
  */
 import path from "node:path";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { glob } from "tinyglobby";
 import type { FileResult, ResolvedLightningConfig, RunSummary } from "../types.ts";
 import {
@@ -19,7 +20,7 @@ import { runFilesInPool } from "./pool.ts";
 import { applyShard } from "./sharding.ts";
 import { detectGlobalOnly } from "./only.ts";
 import { runTypechecks, TYPECHECK_INCLUDE, isTypeTestFile } from "../typecheck/index.ts";
-import { runBenchmarks, BENCH_INCLUDE, formatBenchmarkReport } from "../bench/runner.ts";
+import { runBenchmarks, BENCH_INCLUDE, formatBenchmarkReport, type BenchmarkBaseline } from "../bench/runner.ts";
 
 async function discover(
   config: ResolvedLightningConfig,
@@ -115,12 +116,28 @@ export async function runBenchmarkTests(
   await reporter.onStart(plans.reduce((count, plan) => count + plan.files.length, 0), rootConfig.root);
   const start = performance.now();
   const results: FileResult[] = [];
+  let baseline: BenchmarkBaseline | undefined;
+  if (rootConfig.benchmark.compare) {
+    baseline = JSON.parse(await readFile(path.resolve(rootConfig.root, rootConfig.benchmark.compare), "utf8")) as BenchmarkBaseline;
+    if (baseline.version !== 1 || !baseline.benchmarks || typeof baseline.benchmarks !== "object") throw new Error("Invalid benchmark baseline");
+  }
+  const output: BenchmarkBaseline = { version: 1, benchmarks: {} };
   const hasGlobalOnly = await detectGlobalOnly(plans.flatMap((plan) => plan.files), "bench");
   for (const { config, files } of plans) {
     if (config.browser.enabled) throw new Error("Benchmarks currently require the Node runner; disable browser mode.");
-    const fileResults = await runBenchmarks(files, config, { ...config.benchmark, hasGlobalOnly });
+    const { files: fileResults, benchmarks } = await runBenchmarks(files, config, {
+      hasGlobalOnly,
+      ...(baseline ? { baseline } : {}),
+      ...(config.benchmark.threshold !== undefined ? { threshold: config.benchmark.threshold } : {}),
+    });
+    Object.assign(output.benchmarks, benchmarks);
     for (const file of fileResults) await reporter.onFileDone(file);
     results.push(...fileResults);
+  }
+  if (rootConfig.benchmark.baseline && !results.some((file) => file.error || file.results.some((result) => result.state === "fail"))) {
+    const target = path.resolve(rootConfig.root, rootConfig.benchmark.baseline);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, JSON.stringify(output, null, 2) + "\n");
   }
   if (rootConfig.reporters.includes("default") || rootConfig.reporters.includes("verbose")) console.log(formatBenchmarkReport(results));
   const summary = createRunSummary(results, performance.now() - start);
