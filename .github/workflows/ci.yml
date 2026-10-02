@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [20, 22, 24]
+        node-version: [22, 24]
 
     steps:
       - name: Checkout
@@ -38,7 +38,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       # Dogfood + playground specs import `@lightning-js/lightning` by name. Nasti's
       # module runner externalizes that bare import to Node, which resolves it from
@@ -62,3 +62,43 @@ jobs:
 
       - name: Playground smoke test
         run: pnpm test:playground
+
+      - name: Runtime and CLI contracts
+        run: |
+          pnpm test:runtime
+          node --test test/cli.integration.mjs test/docs.integration.mjs
+
+      - name: DOM, type and benchmark playgrounds
+        run: |
+          node bin/lightning.mjs run --root playground/frameworks
+          node bin/lightning.mjs run --root playground/types --typecheck
+          node bin/lightning.mjs bench --root playground/bench
+
+  browser:
+    name: Chromium browser workflows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 10
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies and Chromium
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright-core install --with-deps chromium
+          mkdir -p node_modules/@lightning-js
+          ln -sfn ../.. node_modules/@lightning-js/lightning
+      - name: Browser playground and regressions
+        run: |
+          pnpm build
+          node bin/lightning.mjs run --root playground/browser
+          node --test test/browser-workflows.integration.mjs

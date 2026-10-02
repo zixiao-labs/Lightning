@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lightning — English / 中文</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 56rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.65; }
+    nav { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+    pre { padding: 1rem; border: 1px solid; overflow-x: auto; }
+    section { margin-block: 3rem; }
+    code { font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Lightning ⚡️</h1>
+    <p>Nasti-native tests for Node.js, DOM emulators and real browsers.</p>
+    <nav aria-label="Language and topics">
+      <a href="#english">English</a>
+      <a href="#chinese" lang="zh-CN">中文</a>
+      <a href="#compatibility">Compatibility / 兼容边界</a>
+    </nav>
+  </header>
+  <main>
+    <section id="english" lang="en">
+      <h2>Get started</h2>
+      <p>Requires Node.js ≥22.12.0. The API alignment target is Vitest 5.0.3,
+        not full Vitest/Jest feature parity.</p>
+      <pre><code>pnpm add -D @lightning-js/lightning
+pnpm exec lightning run
+pnpm exec lightning watch</code></pre>
+      <pre><code>import { test, expect } from "@lightning-js/lightning";
+
+test("adds", () => expect(1 + 2).toBe(3));
+test.for([[1, 2, 3]] as const)("sum %i + %i", ([a, b, sum], { expect }) => {
+  expect(a + b).toBe(sum);
+});</code></pre>
+      <h3>Configure projects</h3>
+      <pre><code>import { defineConfig } from "@lightning-js/lightning/config";
+
+export default defineConfig({
+  test: {
+    maxWorkers: 2,
+    projects: [
+      { test: { name: "unit", include: ["test/unit/**/*.test.ts"] } },
+      "packages/*/lightning.config.ts",
+    ],
+  },
+});</code></pre>
+      <p>Use <code>--project unit</code> to filter. Inline, path/glob and nested
+        projects inherit defaults; <code>extends: false</code> opts out.
+        Reporters aggregate once across projects. Watch one project at a time.</p>
+      <h3>Coverage, reports and type tests</h3>
+      <pre><code>pnpm exec lightning run --coverage --coverage-provider istanbul
+pnpm exec lightning run --reporter junit --output-file artifacts/junit.xml
+pnpm exec lightning run --shard 1/4
+pnpm exec lightning run --typecheck</code></pre>
+      <p>V8 reports source-mapped runtime ranges. Istanbul instruments original
+        JS/TS/JSX ASTs. Both emit text/html/lcov/standard JSON and enforce thresholds.
+        Declaration test files compile without execution, even under broad runtime globs.</p>
+      <h3>Browser mode</h3>
+      <pre><code>pnpm add -D playwright
+pnpm exec playwright install chromium
+pnpm exec lightning run --browser
+pnpm exec lightning watch --browser</code></pre>
+      <p>Import DOM helpers from <code>@lightning-js/lightning/browser</code>.
+        Always await <code>userEvent</code>: browser actions use trusted Playwright
+        input; jsdom/happy-dom use a synthetic fallback. Browser V8 coverage requires
+        Chromium; Istanbul does not depend on Chromium's coverage API.</p>
+      <h3>Benchmarking</h3>
+      <pre><code>test("parse", async ({ bench, expect }) => {
+  const result = await bench("JSON", () => JSON.parse("{}"), { time: 100 }).run();
+  expect(result.throughput.mean).toBeGreaterThan(0);
+});
+
+// *.bench.ts / *.benchmark.ts
+// lightning bench --baseline baseline.json
+// lightning bench --compare baseline.json --regression-threshold 10</code></pre>
+      <p>Context comparisons and measurements are serial. Legacy top-level
+        <code>bench</code> and <code>describe.bench</code> remain supported.
+        Benchmark regressions should be measured on controlled hardware.</p>
+    </section>
+    <section id="chinese" lang="zh-CN">
+      <h2>中文快速开始</h2>
+      <p>Lightning 复用 Nasti 的模块/TS/JSX 管线，测试运行时兼容目标为
+        Vitest 5.0.3 的核心 API。要求 Node.js ≥22.12.0，不宣称完整复刻 Vitest/Jest。</p>
+      <pre><code>pnpm add -D @lightning-js/lightning
+pnpm exec lightning run
+pnpm exec lightning watch
+pnpm exec lightning run --typecheck
+pnpm exec lightning bench</code></pre>
+      <h3>配置与迁移</h3>
+      <ul>
+        <li>配置助手从 <code>@lightning-js/lightning/config</code> 导入，
+          支持 <code>defineConfig</code> 和 <code>defineProject</code>。</li>
+        <li><code>test.projects</code> 支持内联、配置路径、目录、正 glob 与嵌套，
+          默认继承，使用 <code>extends: false</code> 关闭继承。</li>
+        <li>使用 <code>--project</code> 选择项目；JSON/JUnit 在整个 run 结束时统一汇总。</li>
+        <li>Lightning 管线提供 Vitest/Jest 导入兼容；<code>jest</code> 是
+          <code>vi</code> 别名。Jest 配置仅映射明确的子集，不支持字段直接报错。</li>
+        <li>使用 globals 时，编辑器类型来自
+          <code>@lightning-js/lightning/globals</code>。</li>
+      </ul>
+      <h3>运行时与验收</h3>
+      <ul>
+        <li>支持选项式 test、for/条件 API、预期失败、结束/失败清理回调、
+          条件 Mock、异步断言与带取消信号的 poll。</li>
+        <li>Node 并发断言使用 async-local 状态；浏览器测试串行，避免 await 后状态串台。</li>
+        <li>V8 使用运行时 range 语义；Istanbul 提供原始 AST 插桩。
+          未执行文件零覆盖，阈值不达标或 reporter 失败均返回非零退出码。</li>
+        <li>声明测试只编译、不执行；Tinybench 支持上下文 API、串行比较与 CLI 基线。</li>
+        <li>浏览器 watch 只重跑依赖受影响的测试，运行期间的变化排队；
+          可信 click/hover 通过 Playwright 执行，交互必须 await。</li>
+        <li>仓库内包含 Node、React/jsdom、Vue/happy-dom、浏览器、类型与基准样例。</li>
+      </ul>
+      <h3>开发命令</h3>
+      <pre><code>pnpm typecheck
+pnpm test
+pnpm test:runtime
+pnpm test:integration
+pnpm test:browser:integration
+pnpm test:frameworks
+pnpm test:types
+pnpm test:bench</code></pre>
+    </section>
+    <section id="compatibility">
+      <h2>Compatibility / 兼容边界</h2>
+      <p>Not yet implemented / 尚未实现：fixtures/test.extend、around hooks、
+        tags/annotations、VM pools、WebdriverIO、完整自动 module mock/ESM live bindings、
+        多项目/类型测试 watch、Vitest UI/trace/doctor/fs cache，以及完整交错基准 provider
+        和比较 matcher。未知 V8 转换映射会明确报错，不生成伪正确数据。</p>
+      <p><strong>Wuling / 武陵：</strong>integration is postponed while Wuling is
+        rebuilt. 本轮延期，不虚构服务接口或鉴权协议。</p>
+    </section>
+  </main>
+</body>
+</html>
