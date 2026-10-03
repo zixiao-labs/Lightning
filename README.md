@@ -190,6 +190,11 @@ Measurements are serial. A throughput loss exceeding the threshold fails the run
 Compare on controlled hardware; normal timing noise is not a correctness guarantee.
 This is not Vitest 5's full interleaved/custom-provider benchmark implementation.
 
+## Releases
+
+See the [v3.0.0 Release Notes](https://github.com/zixiao-labs/Lightning/blob/v3.0.0/docs/releases/v3.0.0.md)
+for changes and upgrade instructions, or browse [all releases](https://github.com/zixiao-labs/Lightning/releases).
+
 ## Development
 
 ```sh
