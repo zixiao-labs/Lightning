@@ -1,5 +1,8 @@
 # Migration / 迁移指南
 
+For the public exports and runnable usage patterns, see the [API reference](API.md),
+[configuration guide](CONFIGURATION.md), and [examples cookbook](EXAMPLES.md).
+
 ## From Vitest
 
 1. Install `@lightning-js/lightning` and change the test script to `lightning run`.
