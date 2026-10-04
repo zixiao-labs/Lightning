@@ -8,6 +8,8 @@ its optional browser mode.
 This is a supported API subset, not an implementation of every Vitest/Jest feature.
 See [migration and compatibility](docs/MIGRATION.md), [路线图](ROADMAP.md), and the
 [English / 中文 documentation site](website/index.html).
+See also the [API reference](docs/API.md), [configuration guide](docs/CONFIGURATION.md),
+and [examples cookbook](docs/EXAMPLES.md).
 
 ## Quick start
 
