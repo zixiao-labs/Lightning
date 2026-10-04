@@ -52,6 +52,7 @@ export type {
   CoverageThresholds,
   ShardOptions,
   ProjectConfig,
+  DurationBreakdown,
   RunSummary,
   Task,
   Suite,

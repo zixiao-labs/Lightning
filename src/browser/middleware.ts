@@ -13,7 +13,7 @@
  *   POST /result         → test results + updated snapshot data for a token
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { TestResult } from "../types.ts";
+import type { DurationBreakdown, TestResult } from "../types.ts";
 import { testerHtml } from "./client.ts";
 
 /** What the in-page entry needs to run one spec file. */
@@ -33,6 +33,7 @@ export interface BrowserRunPayload {
 export interface BrowserResultMessage {
   token: string;
   durationMs: number;
+  durationBreakdown?: DurationBreakdown;
   results?: TestResult[];
   error?: { message: string; stack?: string };
   snapshot?: { data: Record<string, string>; dirty: boolean };

@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { createServer } from "@nasti-toolchain/nasti";
-import type { FileResult, ResolvedLightningConfig, TestError } from "../types.ts";
+import type { DurationBreakdown, FileResult, ResolvedLightningConfig, TestError, TestResult } from "../types.ts";
 import { finishCollection, startCollection } from "./collect.ts";
 import { runSuiteTree } from "./run.ts";
 import { installGlobals } from "./globals.ts";
@@ -16,6 +16,7 @@ import type { V8CoverageScript } from "../types.ts";
 import { captureUnhandledErrors, unhandledErrorResults } from "./unhandled.ts";
 import { enrichCoverage } from "../node/test-server.ts";
 import { startIstanbulCoverage, finishIstanbulCoverage } from "../coverage/istanbul-core.ts";
+import { getTransformDuration, prepareTransformTiming } from "../utils/transform-timing.ts";
 
 type DevServer = Awaited<ReturnType<typeof createServer>>;
 
@@ -38,6 +39,13 @@ export interface RunTestFileOptions {
 export async function runTestFile(options: RunTestFileOptions): Promise<FileResult> {
   const { config, file, server, hasGlobalOnly } = options;
   const start = performance.now();
+  const durationBreakdown: DurationBreakdown = {
+    transformMs: 0,
+    setupMs: 0,
+    importMs: 0,
+    testsMs: 0,
+    environmentMs: 0,
+  };
   const environment = await resolveFileEnvironment(config, file);
   let env: Awaited<ReturnType<typeof setupEnvironment>> | undefined;
   let coverage: CoverageSession | undefined;
@@ -52,7 +60,12 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
   }
 
   try {
-    env = await setupEnvironment(environment);
+    const environmentStart = performance.now();
+    try {
+      env = await setupEnvironment(environment);
+    } finally {
+      durationBreakdown.environmentMs += performance.now() - environmentStart;
+    }
     if (config.coverage.enabled && config.coverage.provider === "istanbul") startIstanbulCoverage();
     if (config.coverage.enabled && config.coverage.provider === "v8") {
       coverage = new CoverageSession(config.root);
@@ -67,24 +80,39 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
       update: config.updateSnapshots,
     });
 
-    await server.ssrLoadModule(fileToUrl(config.root, file));
+    await prepareTransformTiming(server, "ssr");
+    const transformStart = getTransformDuration(server, "ssr");
+    const importStart = performance.now();
+    try {
+      await server.ssrLoadModule(fileToUrl(config.root, file));
+    } finally {
+      durationBreakdown.importMs += performance.now() - importStart;
+      durationBreakdown.transformMs += getTransformDuration(server, "ssr") - transformStart;
+    }
     const { root, hasOnly } = finishCollection();
-    const results = await runSuiteTree(root, {
-      hasOnly: hasOnly || hasGlobalOnly,
-      defaultTimeout: config.testTimeout,
-      retry: config.retry,
-      repeats: config.repeats,
-      ...(config.testNamePattern ? { namePattern: config.testNamePattern } : {}),
-      onTestStart: (name) => setCurrentSnapshotTest(name),
-      onTestEnd: () => setCurrentSnapshotTest(undefined),
-    });
-    await unhandled.drain();
+    let results: TestResult[];
+    const testsStart = performance.now();
+    try {
+      results = await runSuiteTree(root, {
+        hasOnly: hasOnly || hasGlobalOnly,
+        defaultTimeout: config.testTimeout,
+        retry: config.retry,
+        repeats: config.repeats,
+        ...(config.testNamePattern ? { namePattern: config.testNamePattern } : {}),
+        onTestStart: (name) => setCurrentSnapshotTest(name),
+        onTestEnd: () => setCurrentSnapshotTest(undefined),
+      });
+      await unhandled.drain();
+    } finally {
+      durationBreakdown.testsMs += performance.now() - testsStart;
+    }
     results.push(...unhandledErrorResults(unhandled.errors));
     const coverageScripts = await stopCoverage();
     return {
       filepath: file,
       results,
       durationMs: performance.now() - start,
+      durationBreakdown,
       environment,
       ...(unhandled.errors.length ? { unhandledErrors: unhandled.errors } : {}),
       ...(config.projectName ? { projectName: config.projectName } : {}),
@@ -98,6 +126,7 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
       results: [],
       error: toError(err),
       durationMs: performance.now() - start,
+      durationBreakdown,
       environment,
       ...(config.projectName ? { projectName: config.projectName } : {}),
       ...(coverageScripts ? { coverage: coverageScripts } : {}),
@@ -109,6 +138,11 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
     restoreGlobals?.();
     finishSnapshotFile();
     cleanupViState();
-    await env?.teardown();
+    const environmentStart = performance.now();
+    try {
+      await env?.teardown();
+    } finally {
+      durationBreakdown.environmentMs += performance.now() - environmentStart;
+    }
   }
 }

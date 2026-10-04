@@ -18,6 +18,7 @@ import c from "tinyrainbow";
 import { createServer } from "@nasti-toolchain/nasti";
 import type {
   BrowserName,
+  DurationBreakdown,
   FileResult,
   ResolvedLightningConfig,
   TestError,
@@ -32,6 +33,7 @@ import {
 import { normalizePath } from "../node/path-utils.ts";
 import { BrowserTestHub, type BrowserResultMessage } from "./middleware.ts";
 import { createBrowserApiPlugin } from "./plugin.ts";
+import { getTransformDuration, prepareTransformTiming } from "../utils/transform-timing.ts";
 import {
   loadPlaywrightModule,
   type PlaywrightBrowser,
@@ -159,6 +161,13 @@ async function runFileInBrowser(
 ): Promise<FileResult> {
   const { config, hub, origin, browserName } = ctx;
   const start = performance.now();
+  const durationBreakdown: DurationBreakdown = {
+    transformMs: 0,
+    setupMs: 0,
+    importMs: 0,
+    testsMs: 0,
+    environmentMs: 0,
+  };
   const snapshotPath = snapshotPathFor(file, config.snapshotDir);
   // May throw on a corrupt .snap — surfaced as this file's load error below.
   const snapshotData = readSnapshotData(snapshotPath);
@@ -183,8 +192,10 @@ async function runFileInBrowser(
     snapshot: { data: snapshotData, update: config.updateSnapshots },
   });
 
+  const environmentStart = performance.now();
   const context = ctx.sharedContext ?? (await ctx.browser.newContext());
   const page = await context.newPage();
+  durationBreakdown.environmentMs += performance.now() - environmentStart;
   const relFile = normalizePath(path.relative(config.root, file));
   let lastPageError: Error | undefined;
 
@@ -231,12 +242,19 @@ async function runFileInBrowser(
   try {
     await installBrowserInput(page);
     if (config.coverage.enabled && config.coverage.provider === "v8") await page.coverage.startJSCoverage({ resetOnNavigation: false });
+    const transformStart = getTransformDuration(ctx.server, "client");
     await page.goto(`${origin}/__lightning__/?token=${encodeURIComponent(token)}`);
     const message: BrowserResultMessage = await Promise.race([
       pendingResult,
       watchdog,
       crashed,
     ]);
+    durationBreakdown.transformMs += getTransformDuration(ctx.server, "client") - transformStart;
+    if (message.durationBreakdown) {
+      durationBreakdown.setupMs += message.durationBreakdown.setupMs;
+      durationBreakdown.importMs += message.durationBreakdown.importMs;
+      durationBreakdown.testsMs += message.durationBreakdown.testsMs;
+    }
     const coverage = config.coverage.enabled && config.coverage.provider === "v8"
       ? coverageScripts(await page.coverage.stopJSCoverage(), origin, config.root)
       : undefined;
@@ -261,6 +279,7 @@ async function runFileInBrowser(
         ? { error: rewriteErrorOrigin(message.error, origin, config.root) }
         : {}),
       durationMs: performance.now() - start,
+      durationBreakdown,
       browser: browserName,
       ...(coverage ? { coverage } : {}),
       ...(message.istanbulCoverage ? { istanbulCoverage: message.istanbulCoverage } : {}),
@@ -269,8 +288,13 @@ async function runFileInBrowser(
   } finally {
     if (watchdogTimer) clearTimeout(watchdogTimer);
     hub.unregister(token);
-    await page.close().catch(() => undefined);
-    if (!ctx.sharedContext) await context.close().catch(() => undefined);
+    const environmentStart = performance.now();
+    try {
+      await page.close().catch(() => undefined);
+      if (!ctx.sharedContext) await context.close().catch(() => undefined);
+    } finally {
+      durationBreakdown.environmentMs += performance.now() - environmentStart;
+    }
   }
 }
 
@@ -291,6 +315,7 @@ export async function runFilesInBrowser(
   });
 
   try {
+    await prepareTransformTiming(server, "client");
     // Port 0 → OS-assigned; Nasti records the actual port on its config.
     if (!options.server) await server.listen(0);
     const port = server.config.server.port;
@@ -329,6 +354,13 @@ export async function runFilesInBrowser(
                 results: [],
                 error: toError(error),
                 durationMs: 0,
+                durationBreakdown: {
+                  transformMs: 0,
+                  setupMs: 0,
+                  importMs: 0,
+                  testsMs: 0,
+                  environmentMs: 0,
+                },
                 browser: browserName,
                 ...(config.projectName ? { projectName: config.projectName } : {}),
               }),

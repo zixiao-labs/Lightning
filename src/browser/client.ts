@@ -84,6 +84,13 @@ async function importErrorDetail(testUrl, error) {
 
 async function main() {
   const start = performance.now();
+  const durationBreakdown = {
+    transformMs: 0,
+    setupMs: 0,
+    importMs: 0,
+    testsMs: 0,
+    environmentMs: 0,
+  };
   let unhandled;
   let restoreGlobals;
   let runner;
@@ -102,25 +109,34 @@ async function main() {
     runner.startCollection();
 
     let collected;
+    const importStart = performance.now();
     try {
       await import(cfg.testUrl);
       collected = runner.finishCollection();
     } catch (error) {
       throw await importErrorDetail(cfg.testUrl, error);
+    } finally {
+      durationBreakdown.importMs += performance.now() - importStart;
     }
 
-    const results = await runner.runSuiteTree(collected.root, {
-      hasOnly: collected.hasOnly || cfg.hasGlobalOnly,
-      defaultTimeout: cfg.testTimeout,
-      retry: cfg.retry,
-      repeats: cfg.repeats,
-      ...(cfg.namePattern ? { namePattern: new RegExp(cfg.namePattern.source, cfg.namePattern.flags) } : {}),
-      onTestStart: (name) => runner.setCurrentSnapshotTest(name),
-      onTestEnd: () => {
-        runner.setCurrentSnapshotTest(undefined);
-        runner.cleanupContainers();
-      },
-    });
+    let results;
+    const testsStart = performance.now();
+    try {
+      results = await runner.runSuiteTree(collected.root, {
+        hasOnly: collected.hasOnly || cfg.hasGlobalOnly,
+        defaultTimeout: cfg.testTimeout,
+        retry: cfg.retry,
+        repeats: cfg.repeats,
+        ...(cfg.namePattern ? { namePattern: new RegExp(cfg.namePattern.source, cfg.namePattern.flags) } : {}),
+        onTestStart: (name) => runner.setCurrentSnapshotTest(name),
+        onTestEnd: () => {
+          runner.setCurrentSnapshotTest(undefined);
+          runner.cleanupContainers();
+        },
+      });
+    } finally {
+      durationBreakdown.testsMs += performance.now() - testsStart;
+    }
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     for (const [index, error] of unhandled.errors.entries()) {
@@ -132,6 +148,7 @@ async function main() {
     await post("result", {
       token,
       durationMs: performance.now() - start,
+      durationBreakdown,
       results: safeResults(results),
       ...(cfg.coverageProvider === "istanbul" ? { istanbulCoverage: runner.finishIstanbulCoverage() } : {}),
       ...(snapshot ? { snapshot } : {}),
@@ -140,6 +157,7 @@ async function main() {
     await post("result", {
       token,
       durationMs: performance.now() - start,
+      durationBreakdown,
       error: safeError(error),
     });
   } finally {
