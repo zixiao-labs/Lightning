@@ -10,6 +10,22 @@ export function createRunSummary(files: FileResult[], durationMs: number): RunSu
     todoTests: 0,
     durationMs,
   };
+  if (files.some((file) => file.durationBreakdown)) {
+    summary.durationBreakdown = files.reduce(
+      (total, file) => {
+        const breakdown = file.durationBreakdown;
+        if (breakdown) {
+          total.transformMs += breakdown.transformMs;
+          total.setupMs += breakdown.setupMs;
+          total.importMs += breakdown.importMs;
+          total.testsMs += breakdown.testsMs;
+          total.environmentMs += breakdown.environmentMs;
+        }
+        return total;
+      },
+      { transformMs: 0, setupMs: 0, importMs: 0, testsMs: 0, environmentMs: 0 },
+    );
+  }
   for (const f of files) {
     for (const r of f.results) {
       if (r.state === "pass") summary.passedTests++;

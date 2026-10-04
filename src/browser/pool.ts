@@ -18,6 +18,7 @@ import c from "tinyrainbow";
 import { createServer } from "@nasti-toolchain/nasti";
 import type {
   BrowserName,
+  DurationBreakdown,
   FileResult,
   ResolvedLightningConfig,
   TestError,
@@ -32,6 +33,7 @@ import {
 import { normalizePath } from "../node/path-utils.ts";
 import { BrowserTestHub, type BrowserResultMessage } from "./middleware.ts";
 import { createBrowserApiPlugin } from "./plugin.ts";
+import { getTransformDuration, prepareTransformTiming } from "../utils/transform-timing.ts";
 import {
   loadPlaywrightModule,
   type PlaywrightBrowser,
@@ -159,86 +161,112 @@ async function runFileInBrowser(
 ): Promise<FileResult> {
   const { config, hub, origin, browserName } = ctx;
   const start = performance.now();
+  const durationBreakdown: DurationBreakdown = {
+    transformMs: 0,
+    setupMs: 0,
+    importMs: 0,
+    testsMs: 0,
+    environmentMs: 0,
+  };
   const snapshotPath = snapshotPathFor(file, config.snapshotDir);
-  // May throw on a corrupt .snap — surfaced as this file's load error below.
-  const snapshotData = readSnapshotData(snapshotPath);
-
-  const token = randomUUID();
-  const pendingResult = hub.register(token, {
-    testUrl: specUrl(config.root, file),
-    testTimeout: config.testTimeout,
-    retry: config.retry,
-    repeats: config.repeats,
-    hasGlobalOnly: ctx.hasGlobalOnly,
-    globals: config.globals,
-    ...(config.coverage.enabled && config.coverage.provider === "istanbul" ? { coverageProvider: "istanbul" as const } : {}),
-    ...(config.testNamePattern
-      ? {
-          namePattern: {
-            source: config.testNamePattern.source,
-            flags: config.testNamePattern.flags,
-          },
-        }
-      : {}),
-    snapshot: { data: snapshotData, update: config.updateSnapshots },
-  });
-
-  const context = ctx.sharedContext ?? (await ctx.browser.newContext());
-  const page = await context.newPage();
-  const relFile = normalizePath(path.relative(config.root, file));
-  let lastPageError: Error | undefined;
-
-  page.on("console", (message) => {
-    const text = message.text();
-    // CSS modules pull in Nasti's HMR client, which chats on connect; that's
-    // dev-pipeline noise, not test output.
-    if (text.startsWith("[nasti]")) return;
-    const type = message.type();
-    const line = `${c.dim(`[${browserName}]`)} ${text}`;
-    if (type === "error") console.error(line);
-    else if (type === "warning") console.warn(line);
-    else console.log(line);
-  });
-  page.on("pageerror", (error) => {
-    lastPageError = error;
-    console.error(
-      `${c.dim(`[${browserName}]`)} ${c.red(`uncaught error in ${relFile}:`)} ${error.message}`,
-    );
-  });
-
-  // Per-test timeouts run inside the page, so a healthy page always posts a
-  // result; the watchdog only catches a hung page (sync infinite loop, crash).
-  const watchdogMs = Math.max(60_000, config.testTimeout * 10);
+  let token: string | undefined;
+  let context: PlaywrightContext | undefined;
+  let page: PlaywrightPage | undefined;
   let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
-  const watchdog = new Promise<never>((_, reject) => {
-    watchdogTimer = setTimeout(() => {
-      const detail = lastPageError ? `; last page error: ${lastPageError.message}` : "";
-      reject(
-        new Error(
-          `browser did not report a result for ${relFile} within ${watchdogMs}ms${detail}`,
-        ),
-      );
-    }, watchdogMs);
-  });
-  const crashed = new Promise<never>((_, reject) => {
-    page.on("crash", () => reject(new Error(`browser page crashed while running ${relFile}`)));
-    page.on("close", () => reject(new Error(`browser page closed while running ${relFile}`)));
-  });
-  // A crash landing after the race settles (e.g. during teardown) must not
-  // become an unhandled rejection; the race itself still sees the original.
-  crashed.catch(() => undefined);
+  let result: FileResult;
 
   try {
-    await installBrowserInput(page);
-    if (config.coverage.enabled && config.coverage.provider === "v8") await page.coverage.startJSCoverage({ resetOnNavigation: false });
-    await page.goto(`${origin}/__lightning__/?token=${encodeURIComponent(token)}`);
+    // May throw on a corrupt .snap — surfaced as this file's load error below.
+    const snapshotData = readSnapshotData(snapshotPath);
+
+    token = randomUUID();
+    const pendingResult = hub.register(token, {
+      testUrl: specUrl(config.root, file),
+      testTimeout: config.testTimeout,
+      retry: config.retry,
+      repeats: config.repeats,
+      hasGlobalOnly: ctx.hasGlobalOnly,
+      globals: config.globals,
+      ...(config.coverage.enabled && config.coverage.provider === "istanbul" ? { coverageProvider: "istanbul" as const } : {}),
+      ...(config.testNamePattern
+        ? {
+            namePattern: {
+              source: config.testNamePattern.source,
+              flags: config.testNamePattern.flags,
+            },
+          }
+        : {}),
+      snapshot: { data: snapshotData, update: config.updateSnapshots },
+    });
+
+    const environmentStart = performance.now();
+    let runPage: PlaywrightPage;
+    try {
+      context = ctx.sharedContext ?? (await ctx.browser.newContext());
+      runPage = await context.newPage();
+      page = runPage;
+    } finally {
+      durationBreakdown.environmentMs += performance.now() - environmentStart;
+    }
+    const relFile = normalizePath(path.relative(config.root, file));
+    let lastPageError: Error | undefined;
+
+    runPage.on("console", (message) => {
+      const text = message.text();
+      // CSS modules pull in Nasti's HMR client, which chats on connect; that's
+      // dev-pipeline noise, not test output.
+      if (text.startsWith("[nasti]")) return;
+      const type = message.type();
+      const line = `${c.dim(`[${browserName}]`)} ${text}`;
+      if (type === "error") console.error(line);
+      else if (type === "warning") console.warn(line);
+      else console.log(line);
+    });
+    runPage.on("pageerror", (error) => {
+      lastPageError = error;
+      console.error(
+        `${c.dim(`[${browserName}]`)} ${c.red(`uncaught error in ${relFile}:`)} ${error.message}`,
+      );
+    });
+
+    // Per-test timeouts run inside the page, so a healthy page always posts a
+    // result; the watchdog only catches a hung page (sync infinite loop, crash).
+    const watchdogMs = Math.max(60_000, config.testTimeout * 10);
+    const watchdog = new Promise<never>((_, reject) => {
+      watchdogTimer = setTimeout(() => {
+        const detail = lastPageError ? `; last page error: ${lastPageError.message}` : "";
+        reject(
+          new Error(
+            `browser did not report a result for ${relFile} within ${watchdogMs}ms${detail}`,
+          ),
+        );
+      }, watchdogMs);
+    });
+    const crashed = new Promise<never>((_, reject) => {
+      runPage.on("crash", () => reject(new Error(`browser page crashed while running ${relFile}`)));
+      runPage.on("close", () => reject(new Error(`browser page closed while running ${relFile}`)));
+    });
+    // A crash landing after the race settles (e.g. during teardown) must not
+    // become an unhandled rejection; the race itself still sees the original.
+    crashed.catch(() => undefined);
+
+    await installBrowserInput(runPage);
+    if (config.coverage.enabled && config.coverage.provider === "v8") await runPage.coverage.startJSCoverage({ resetOnNavigation: false });
+    const transformStart = getTransformDuration(ctx.server, "client");
+    await runPage.goto(`${origin}/__lightning__/?token=${encodeURIComponent(token)}`);
     const message: BrowserResultMessage = await Promise.race([
       pendingResult,
       watchdog,
       crashed,
     ]);
+    durationBreakdown.transformMs += getTransformDuration(ctx.server, "client") - transformStart;
+    if (message.durationBreakdown) {
+      durationBreakdown.setupMs += message.durationBreakdown.setupMs;
+      durationBreakdown.importMs += message.durationBreakdown.importMs;
+      durationBreakdown.testsMs += message.durationBreakdown.testsMs;
+    }
     const coverage = config.coverage.enabled && config.coverage.provider === "v8"
-      ? coverageScripts(await page.coverage.stopJSCoverage(), origin, config.root)
+      ? coverageScripts(await runPage.coverage.stopJSCoverage(), origin, config.root)
       : undefined;
     // Nasti serves maps separately from module code. Attach the map only when
     // it belongs to the exact JavaScript Playwright measured.
@@ -254,24 +282,43 @@ async function runFileInBrowser(
       writeSnapshotData(snapshotPath, message.snapshot.data);
     }
 
-    return {
+    result = {
       filepath: file,
       results: rewriteResultOrigins(message.results ?? [], origin, config.root),
       ...(message.error
         ? { error: rewriteErrorOrigin(message.error, origin, config.root) }
         : {}),
-      durationMs: performance.now() - start,
+      durationMs: 0,
+      durationBreakdown,
       browser: browserName,
       ...(coverage ? { coverage } : {}),
       ...(message.istanbulCoverage ? { istanbulCoverage: message.istanbulCoverage } : {}),
       ...(config.projectName ? { projectName: config.projectName } : {}),
     };
+  } catch (error) {
+    result = {
+      filepath: file,
+      results: [],
+      error: toError(error),
+      durationMs: 0,
+      durationBreakdown,
+      browser: browserName,
+      ...(config.projectName ? { projectName: config.projectName } : {}),
+    };
   } finally {
     if (watchdogTimer) clearTimeout(watchdogTimer);
-    hub.unregister(token);
-    await page.close().catch(() => undefined);
-    if (!ctx.sharedContext) await context.close().catch(() => undefined);
+    if (token) hub.unregister(token);
+    const environmentStart = performance.now();
+    try {
+      if (page) await page.close().catch(() => undefined);
+      if (!ctx.sharedContext && context) await context.close().catch(() => undefined);
+    } finally {
+      durationBreakdown.environmentMs += performance.now() - environmentStart;
+    }
   }
+
+  result.durationMs = performance.now() - start;
+  return result;
 }
 
 export async function runFilesInBrowser(
@@ -291,6 +338,7 @@ export async function runFilesInBrowser(
   });
 
   try {
+    await prepareTransformTiming(server, "client");
     // Port 0 → OS-assigned; Nasti records the actual port on its config.
     if (!options.server) await server.listen(0);
     const port = server.config.server.port;
@@ -329,6 +377,13 @@ export async function runFilesInBrowser(
                 results: [],
                 error: toError(error),
                 durationMs: 0,
+                durationBreakdown: {
+                  transformMs: 0,
+                  setupMs: 0,
+                  importMs: 0,
+                  testsMs: 0,
+                  environmentMs: 0,
+                },
                 browser: browserName,
                 ...(config.projectName ? { projectName: config.projectName } : {}),
               }),

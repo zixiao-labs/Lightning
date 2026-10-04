@@ -198,10 +198,21 @@ export interface FileResult {
   browser?: BrowserName;
   /** Project display name when running a multi-project config. */
   projectName?: string;
+  /** Per-file phase timings used by the default duration summary. */
+  durationBreakdown?: DurationBreakdown;
   /** Raw V8 script coverage collected for this file, when coverage is enabled. */
   coverage?: V8CoverageScript[];
   /** Instrumented original-source counters from the optional Istanbul provider. */
   istanbulCoverage?: Record<string, unknown>;
+}
+
+/** Accumulated phase times; phases overlap and parallel work may exceed wall time. */
+export interface DurationBreakdown {
+  transformMs: number;
+  setupMs: number;
+  importMs: number;
+  testsMs: number;
+  environmentMs: number;
 }
 
 export interface RunSummary {
@@ -212,6 +223,7 @@ export interface RunSummary {
   skippedTests: number;
   todoTests: number;
   durationMs: number;
+  durationBreakdown?: DurationBreakdown;
 }
 
 export interface Reporter {

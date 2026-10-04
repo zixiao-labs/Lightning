@@ -111,10 +111,22 @@ export function printSummary(summary: RunSummary): void {
   const total = summary.passedTests + summary.failedTests + summary.skippedTests + summary.todoTests;
   const testLine = `${c.dim("     Tests")}  ${parts.join(c.dim(" | "))} ${c.dim(`(${total})`)}`;
 
-  const durLine = `${c.dim("  Duration")}  ${Math.round(summary.durationMs)}ms`;
+  const breakdown = summary.durationBreakdown;
+  const phases = breakdown
+    ? ` (${formatDurationPhase("transform", breakdown.transformMs)}, ${formatDurationPhase("setup", breakdown.setupMs)}, ${formatDurationPhase("import", breakdown.importMs)}, ${formatDurationPhase("tests", breakdown.testsMs)}, ${formatDurationPhase("environment", breakdown.environmentMs)})`
+    : "";
+  const durLine = `${c.dim("  Duration")}  ${formatDuration(summary.durationMs)}${phases}`;
   console.log(`${fileLine}\n${testLine}\n${durLine}\n`);
 
   if (summary.failedFiles > 0 || summary.failedTests > 0) console.log(c.bold(c.red("⚡️ test run failed")) + "\n");
   else if (summary.totalFiles === 0) console.log(c.yellow("⚡️ no test files found") + "\n");
   else console.log(c.bold(c.green("⚡️ all tests passed")) + "\n");
+}
+
+function formatDuration(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`;
+}
+
+function formatDurationPhase(name: string, ms: number): string {
+  return `${name} ${formatDuration(ms)}`;
 }

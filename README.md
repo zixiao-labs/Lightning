@@ -63,6 +63,9 @@ at the root. Coverage reports remain project-root-relative. Benchmark comparison
 and baseline output paths use the root config's `root`; one baseline contains
 results from all projects.
 Watch one project at a time with `--project`.
+The default reporter's `Duration` line includes transform, setup, import, test and
+environment timings. These are accumulated phase measurements, not a wall-time
+partition, so they can exceed the total when work overlaps or runs concurrently.
 
 ## Runtime
 
