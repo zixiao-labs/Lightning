@@ -98,6 +98,7 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
     const { root, hasOnly } = finishCollection();
     let results: TestResult[];
     const testsStart = performance.now();
+    const testsTransformStart = getTransformDuration(server, "ssr");
     try {
       results = await runSuiteTree(root, {
         hasOnly: hasOnly || hasGlobalOnly,
@@ -111,6 +112,7 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
       await unhandled.drain();
     } finally {
       durationBreakdown.testsMs += performance.now() - testsStart;
+      durationBreakdown.transformMs += getTransformDuration(server, "ssr") - testsTransformStart;
     }
     results.push(...unhandledErrorResults(unhandled.errors));
     const coverageScripts = await stopCoverage();
