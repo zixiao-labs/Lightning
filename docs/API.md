@@ -15,10 +15,16 @@ import {
 describe("string helpers", () => {
   beforeAll(() => {
     // Runs once before this suite.
+    return () => {
+      // Runs during suite teardown, including after failures.
+    };
   });
 
   beforeEach(() => {
     // Runs before each test in this suite.
+    return () => {
+      // Runs during test teardown, including after failures.
+    };
   });
 
   test("normalizes a value", () => {
@@ -26,19 +32,21 @@ describe("string helpers", () => {
   });
 
   afterEach(() => {
-    // Runs after each test. A returned cleanup function is also supported.
+    // Runs after each test. Return values are ignored.
   });
 
   afterAll(() => {
-    // Runs once after this suite.
+    // Runs once after this suite. Return values are ignored.
   });
 });
 ```
 
 `it` is an alias of `test`. Tests and hooks may be synchronous or asynchronous.
-Hooks can return a cleanup function; it runs after the corresponding setup even
-when a test fails. Use `onTestFinished` and `onTestFailed` from the package root
-to register test-scoped cleanup and failure callbacks.
+Only `beforeAll` and `beforeEach` execute returned cleanup functions during suite
+and test teardown, respectively, including after setup or test failures.
+Return values from `afterAll` and `afterEach` are ignored. Use `onTestFinished`
+and `onTestFailed` from the package root to register test-scoped cleanup and
+failure callbacks.
 
 ## Test options and parameterized cases
 
