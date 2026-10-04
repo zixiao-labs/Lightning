@@ -51,6 +51,7 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
   let coverage: CoverageSession | undefined;
   let restoreGlobals: (() => void) | undefined;
   const unhandled = captureUnhandledErrors();
+  let result: FileResult;
 
   async function stopCoverage(): Promise<V8CoverageScript[] | undefined> {
     if (!coverage) return undefined;
@@ -66,21 +67,26 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
     } finally {
       durationBreakdown.environmentMs += performance.now() - environmentStart;
     }
-    if (config.coverage.enabled && config.coverage.provider === "istanbul") startIstanbulCoverage();
-    if (config.coverage.enabled && config.coverage.provider === "v8") {
-      coverage = new CoverageSession(config.root);
-      await coverage.start();
+    const setupStart = performance.now();
+    try {
+      if (config.coverage.enabled && config.coverage.provider === "istanbul") startIstanbulCoverage();
+      if (config.coverage.enabled && config.coverage.provider === "v8") {
+        coverage = new CoverageSession(config.root);
+        await coverage.start();
+      }
+      if (config.globals) restoreGlobals = installGlobals();
+
+      startCollection();
+      startSnapshotFile({
+        testFile: file,
+        snapshotDir: config.snapshotDir,
+        update: config.updateSnapshots,
+      });
+
+      await prepareTransformTiming(server, "ssr");
+    } finally {
+      durationBreakdown.setupMs += performance.now() - setupStart;
     }
-    if (config.globals) restoreGlobals = installGlobals();
-
-    startCollection();
-    startSnapshotFile({
-      testFile: file,
-      snapshotDir: config.snapshotDir,
-      update: config.updateSnapshots,
-    });
-
-    await prepareTransformTiming(server, "ssr");
     const transformStart = getTransformDuration(server, "ssr");
     const importStart = performance.now();
     try {
@@ -108,10 +114,10 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
     }
     results.push(...unhandledErrorResults(unhandled.errors));
     const coverageScripts = await stopCoverage();
-    return {
+    result = {
       filepath: file,
       results,
-      durationMs: performance.now() - start,
+      durationMs: 0,
       durationBreakdown,
       environment,
       ...(unhandled.errors.length ? { unhandledErrors: unhandled.errors } : {}),
@@ -121,11 +127,11 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
     };
   } catch (err) {
     const coverageScripts = await stopCoverage().catch(() => undefined);
-    return {
+    result = {
       filepath: file,
       results: [],
       error: toError(err),
-      durationMs: performance.now() - start,
+      durationMs: 0,
       durationBreakdown,
       environment,
       ...(config.projectName ? { projectName: config.projectName } : {}),
@@ -145,4 +151,6 @@ export async function runTestFile(options: RunTestFileOptions): Promise<FileResu
       durationBreakdown.environmentMs += performance.now() - environmentStart;
     }
   }
+  result.durationMs = performance.now() - start;
+  return result;
 }

@@ -99,14 +99,19 @@ async function main() {
     if (!configResponse.ok) throw new Error("failed to fetch run config: HTTP " + configResponse.status);
     const cfg = await configResponse.json();
 
-    const api = await import("${LIGHTNING_API_URL}");
-    runner = api.__lightning_browser__;
-    unhandled = runner.captureBrowserErrors();
-    if (cfg.coverageProvider === "istanbul") runner.startIstanbulCoverage();
+    const setupStart = performance.now();
+    try {
+      const api = await import("${LIGHTNING_API_URL}");
+      runner = api.__lightning_browser__;
+      unhandled = runner.captureBrowserErrors();
+      if (cfg.coverageProvider === "istanbul") runner.startIstanbulCoverage();
 
-    runner.startSnapshotSession({ data: cfg.snapshot.data, update: cfg.snapshot.update });
-    if (cfg.globals) restoreGlobals = runner.installGlobals();
-    runner.startCollection();
+      runner.startSnapshotSession({ data: cfg.snapshot.data, update: cfg.snapshot.update });
+      if (cfg.globals) restoreGlobals = runner.installGlobals();
+      runner.startCollection();
+    } finally {
+      durationBreakdown.setupMs += performance.now() - setupStart;
+    }
 
     let collected;
     const importStart = performance.now();
