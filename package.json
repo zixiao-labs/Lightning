@@ -97,12 +97,12 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "tsdown": "0.21.10",
-    "vue": "^3.5.43"
+    "vue": "^3.5.44"
   },
   "dependencies": {
     "@jridgewell/remapping": "^2.3.5",
     "@jridgewell/sourcemap-codec": "^1.6.0",
-    "@nasti-toolchain/nasti": "2.6.4",
+    "@nasti-toolchain/nasti": "2.6.5",
     "cac": "^7.1.0",
     "expect-type": "^1.4.0",
     "import-meta-resolve": "^4.2.0",
