@@ -76,7 +76,8 @@ jobs:
 
   browser:
     name: Chromium browser workflows
-    runs-on: ubuntu-latest
+    # Playwright 1.60.0 supports Ubuntu 24.04, not 26.04; avoid ubuntu-latest drift.
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
