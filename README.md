@@ -34,6 +34,15 @@ test.for([[1, 2, 3], [2, 3, 5]] as const)("sum %i + %i", ([a, b, sum], { expect 
 Bare `lightning` watches in an interactive terminal and runs once in CI/non-TTY.
 Use `run`, `watch`, `--watch` or `--no-watch` to choose explicitly.
 
+### Agent skill
+
+On pnpm **12.11.0 or newer**, install a release that includes the bundled
+[`lightning` skill](skills/lightning/SKILL.md) as a direct dependency, then run
+`pnpm approve` and review the skill for `@lightning-js/lightning`. Once approved,
+pnpm links it into your project's agent skill directories, such as `.agents/skills`.
+If no directory is detected, configure `skills.dirs` in `pnpm-workspace.yaml`.
+See [pnpm Agent Skills](https://pnpm.io/agent-skills) for details.
+
 ## Configuration and projects
 
 ```ts
