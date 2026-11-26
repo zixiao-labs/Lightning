@@ -15,8 +15,8 @@ importers:
         specifier: ^1.6.0
         version: 1.6.0
       '@nasti-toolchain/nasti':
-        specifier: 2.10.1
-        version: 2.10.1(@babel/core@7.29.7(supports-color@7.2.0))(supports-color@7.2.0)
+        specifier: 2.11.1
+        version: 2.11.1(@babel/core@7.29.7(supports-color@7.2.0))(supports-color@7.2.0)
       cac:
         specifier: ^7.1.0
         version: 7.1.0
@@ -331,8 +331,8 @@ packages:
       '@emnapi/core': ^1.7.1 || 2.0.0-beta.2
       '@emnapi/runtime': ^1.7.1 || 2.0.0-beta.2
 
-  '@nasti-toolchain/nasti@2.10.1':
-    resolution: {integrity: sha512-ZofZtEMoGLSmCY1NzssJnBDu2BsU3qGth65V0+4h9azerBlK809iuGALDrDinMgCXFvUxKmH5mDp5t+0x1UyZw==}
+  '@nasti-toolchain/nasti@2.11.1':
+    resolution: {integrity: sha512-MxBT1LSAzxDlrimw/7w2Ik3FOMNnJ4mwrhqP2ZD+zB35Ri2Qzj/9L1q/wM2hNcTPEDeT5YphDVWIZFyvZnEFBg==}
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
     peerDependencies:
@@ -2066,7 +2066,7 @@ snapshots:
       '@tybys/wasm-util': 0.10.4
     optional: true
 
-  '@nasti-toolchain/nasti@2.10.1(@babel/core@7.29.7(supports-color@7.2.0))(supports-color@7.2.0)':
+  '@nasti-toolchain/nasti@2.11.1(@babel/core@7.29.7(supports-color@7.2.0))(supports-color@7.2.0)':
     dependencies:
       cac: 7.0.0
       chokidar: 5.0.0
