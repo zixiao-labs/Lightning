@@ -92,7 +92,7 @@ test("checks an asynchronous result", async () => {
 ```
 
 Use `expect.poll(callback, options)` to retry an asynchronous assertion until it
-passes or reaches its deadline. The callback receives an `{ signal }` object;
+passes or reaches its deadline. The callback receives an object with a `signal`;
 respect its abort signal when doing cancellable work. Unawaited asynchronous
 assertions fail the test.
 
@@ -102,16 +102,18 @@ Import `vi`, `jest`, `fn`, `spyOn`, and `isMockFunction` from the package root.
 `jest` is an alias for `vi`.
 
 ```ts
-import { expect, fn, spyOn, vi } from "@lightning-js/lightning";
+import { expect, fn, spyOn, test } from "@lightning-js/lightning";
 
-const send = fn((message: string) => `sent: ${message}`);
-expect(send("hello")).toBe("sent: hello");
-expect(send).toHaveBeenCalledWith("hello");
+test("records calls and overrides a method", () => {
+  const send = fn((message: string) => `sent: ${message}`);
+  expect(send("hello")).toBe("sent: hello");
+  expect(send).toHaveBeenCalledWith("hello");
 
-const service = { read: () => "original" };
-const read = spyOn(service, "read").mockReturnValue("stubbed");
-expect(service.read()).toBe("stubbed");
-expect(read).toHaveBeenCalledOnce();
+  const service = { read: () => "original" };
+  const read = spyOn(service, "read").mockReturnValue("stubbed");
+  expect(service.read()).toBe("stubbed");
+  expect(read).toHaveBeenCalledTimes(1);
+});
 ```
 
 `vi` provides mock and spy utilities, basic fake timers, stubs, and factory module
@@ -152,6 +154,6 @@ Those files are checked by TypeScript and are not executed as runtime tests.
 | `@lightning-js/lightning/browser` | Browser test APIs, `render`, `cleanup`, `userEvent`, and browser config helpers |
 | `@lightning-js/lightning/globals` | Type declarations for APIs installed when `test.globals` is enabled |
 
-Consult the [configuration guide](CONFIGURATION.md) for config shapes and CLI
-overrides, and the [migration guide](MIGRATION.md) for deliberate compatibility
-boundaries.
+Consult the [configuration guide](https://zixiaolabs.com/docs/lightning/configuration)
+for config shapes and CLI overrides, and the
+[migration guide](https://zixiaolabs.com/docs/lightning/migration) for compatibility boundaries.

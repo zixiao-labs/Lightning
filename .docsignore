@@ -1,0 +1,8 @@
+# Publish only reviewed guides; keep release notes and new files off the Portal
+# until they are explicitly approved for the snapshot.
+/docs/*
+!/docs/api.mdx
+!/docs/configuration.mdx
+!/docs/examples.mdx
+!/docs/migration.mdx
+!/docs/quickstart.mdx

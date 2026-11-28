@@ -6,10 +6,10 @@ its optional browser mode.
 
 **Requires Node.js >=22.12.0.** The compatibility target is Vitest **5.0.3**.
 This is a supported API subset, not an implementation of every Vitest/Jest feature.
-See [migration and compatibility](docs/MIGRATION.md), [路线图](ROADMAP.md), and the
+See [migration and compatibility](docs/migration.mdx), [路线图](ROADMAP.md), and the
 [English / 中文 documentation site](website/index.html).
-See also the [API reference](docs/API.md), [configuration guide](docs/CONFIGURATION.md),
-and [examples cookbook](docs/EXAMPLES.md).
+See also the [quickstart](docs/quickstart.mdx), [API reference](docs/api.mdx),
+[configuration guide](docs/configuration.mdx), and [examples cookbook](docs/examples.mdx).
 
 ## Quick start
 

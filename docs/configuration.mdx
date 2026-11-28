@@ -76,6 +76,12 @@ once for the full invocation and aggregate project results.
 
 Install Playwright and a browser binary, then opt in with CLI or config:
 
+```sh
+pnpm add -D playwright
+pnpm exec playwright install chromium
+pnpm exec lightning run --browser
+```
+
 ```ts
 import { defineConfig } from "@lightning-js/lightning/config";
 
@@ -159,4 +165,4 @@ Lightning config files take precedence. If none exists, Lightning can discover
 a promise for one), not a config factory function. Legacy top-level `projects`
 and `poolOptions.maxWorkers` remain accepted aliases. Jest configuration maps
 only documented fields; unsupported Jest options fail explicitly. See
-[Migration / 迁移指南](MIGRATION.md) for the full supported subset.
+the [migration guide](https://zixiaolabs.com/docs/lightning/migration) for the supported subset.

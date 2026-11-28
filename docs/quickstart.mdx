@@ -1,0 +1,55 @@
+# Get started with Lightning
+
+Lightning is a Nasti-native test runner for Node.js, DOM emulators, and real
+browsers. It runs TypeScript, JSX, and ESM through Nasti's module pipeline.
+Its Vitest 5.0.3 compatibility covers a supported API subset, not every
+Vitest or Jest feature.
+
+## Install and run your first test
+
+Use Node.js 22.12.0 or newer. In your project, install Lightning as a development
+dependency:
+
+```sh
+pnpm add -D @lightning-js/lightning
+```
+
+Create `sum.test.ts` in your project:
+
+```ts
+import { expect, test } from "@lightning-js/lightning";
+
+test("adds two numbers", () => {
+  expect(2 + 3).toBe(5);
+});
+```
+
+Run the suite once, filter by filename, or rerun as you edit:
+
+```sh
+pnpm exec lightning run
+pnpm exec lightning run sum.test.ts
+pnpm exec lightning watch
+```
+
+Use `run` in CI. With neither `run` nor `watch`, Lightning defaults to watch
+mode in an interactive terminal and a single run in CI or without a terminal.
+
+## Choose where tests run
+
+| Use case | What to run |
+| --- | --- |
+| Pure functions, servers, or Node.js modules | Start with the default `node` environment. |
+| Components that need a DOM but not a browser engine | Install `jsdom` or `happy-dom` and select it with `test.environment`. |
+| Browser-specific behavior or trusted browser input | Install Playwright and the browser binary, then run with `--browser`. Always await `userEvent` interactions. |
+
+Set defaults in `lightning.config.ts` with `defineConfig` from
+`@lightning-js/lightning/config`. For a repository with both Node.js and DOM
+tests, use `test.projects` to give each group its own environment.
+
+## Next steps
+
+- [Configuration](https://zixiaolabs.com/docs/lightning/configuration): projects, browser setup, coverage, and CI reports.
+- [API reference](https://zixiaolabs.com/docs/lightning/api): test lifecycle, assertions, mocks, and snapshots.
+- [Examples](https://zixiaolabs.com/docs/lightning/examples): DOM tests, browser input, type assertions, and benchmarks.
+- [Migration](https://zixiaolabs.com/docs/lightning/migration): moving from Vitest or Jest and checking compatibility limits.

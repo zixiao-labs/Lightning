@@ -1,0 +1,31 @@
+name: Publish portal documents
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.docsignore'
+      - '.gitignore'
+      - '.github/workflows/publish-docs.yml'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: portal-docs-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    if: vars.PORTAL_DOCS_ENABLED == 'true' && github.repository_owner == 'zixiao-labs' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: docs-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: zixiao-labs/portal/.github/actions/publish-docs@4a2b2559a6c9c27ce130fd53d34f5aef96dc2db6
