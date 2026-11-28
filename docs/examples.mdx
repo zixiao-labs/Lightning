@@ -48,10 +48,15 @@ test.for([[2, 3, 5], [7, 8, 15]] as const)(
 ```ts
 import { expect, test } from "@lightning-js/lightning";
 
-test("closes a resource after the test", async ({ onTestFinished }) => {
-  const connection = await openConnection();
-  onTestFinished(() => connection.close());
-  expect(connection.isOpen()).toBe(true);
+test("removes an event listener after the test", ({ onTestFinished }) => {
+  const target = new EventTarget();
+  let calls = 0;
+  const listener = () => { calls += 1; };
+  target.addEventListener("ready", listener);
+  onTestFinished(() => target.removeEventListener("ready", listener));
+
+  target.dispatchEvent(new Event("ready"));
+  expect(calls).toBe(1);
 });
 ```
 
@@ -102,39 +107,41 @@ assertType<string>("Ada");
 ```
 
 Run them with `lightning run --typecheck`. See the
-[configuration guide](CONFIGURATION.md) for tsconfig selection and global types.
+[configuration guide](https://zixiaolabs.com/docs/lightning/configuration)
+for tsconfig selection and global types.
 
 ## Run tests in a real browser
 
-Install Playwright and Chromium, then use the browser entry point for DOM
-interactions:
+Follow the browser setup in the
+[configuration guide](https://zixiaolabs.com/docs/lightning/configuration).
+Save this as `save.test.ts` and run `pnpm exec lightning run --browser save.test.ts`.
 
 ```ts
-import { render, userEvent } from "@lightning-js/lightning/browser";
-import { expect, test } from "@lightning-js/lightning";
+import { cleanup, render, userEvent } from "@lightning-js/lightning/browser";
+import { afterEach, expect, test } from "@lightning-js/lightning";
 
-test("submits a form", async () => {
-  const { container, unmount } = render('<button type="button">Save</button>');
-  const button = container.querySelector("button");
-  if (!button) throw new Error("button was not rendered");
+afterEach(cleanup);
+
+test("updates the label when clicked", async () => {
+  const { container } = render('<button type="button">Save</button>');
+  const button = container.querySelector("button")!;
+  button.addEventListener("click", () => { button.textContent = "Saved"; });
   await userEvent.click(button);
-  expect(button.textContent).toBe("Save");
-  unmount();
+  expect(button.textContent).toBe("Saved");
 });
 ```
 
 Always await `userEvent` calls. Real-browser mode uses trusted Playwright input;
-DOM emulators use synthetic events. See the
-[configuration guide](CONFIGURATION.md#browser-mode) for browser setup.
+DOM emulators use synthetic events.
 
 ## Add a benchmark
 
 Benchmarks can be declared in `*.bench.ts` files and run with `lightning bench`:
 
 ```ts
-import { expect, test } from "@lightning-js/lightning";
+import { test } from "@lightning-js/lightning";
 
-test("parse JSON", async ({ bench }) => {
+test("parse JSON", async ({ bench, expect }) => {
   const result = await bench("JSON.parse", () => JSON.parse('{"ok":true}'), {
     time: 100,
   }).run();

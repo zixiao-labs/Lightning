@@ -106,9 +106,7 @@ Check the installed version with `pnpm exec lightning --version`; confirm flags
 with `pnpm exec lightning run --help` rather than assuming the index matches
 the installed release.
 
-If Context7 is unavailable or documents a different version, replace `main`
-in these GitHub links with the installed release tag (`v<version>`):
-[API](https://github.com/zixiao-labs/Lightning/blob/main/docs/API.md),
-[configuration](https://github.com/zixiao-labs/Lightning/blob/main/docs/CONFIGURATION.md),
-[examples](https://github.com/zixiao-labs/Lightning/blob/main/docs/EXAMPLES.md),
-and [migration](https://github.com/zixiao-labs/Lightning/blob/main/docs/MIGRATION.md).
+If Context7 is unavailable, browse the
+[documentation on GitHub](https://github.com/zixiao-labs/Lightning/tree/main/docs).
+To find docs for a specific installed version, switch to its release tag
+(`v<version>`) and open the `docs/` directory there.
