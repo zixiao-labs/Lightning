@@ -31,7 +31,7 @@ test.for([[1, 2, 3], [2, 3, 5]] as const)("sum %i + %i", ([a, b, sum], { expect 
 });
 ```
 
-Bare `lightning` watches in an interactive terminal and runs once in CI/non-TTY.
+Bare `lightning` watches when standard input is a terminal and runs once otherwise.
 Use `run`, `watch`, `--watch` or `--no-watch` to choose explicitly.
 
 ### Agent skill

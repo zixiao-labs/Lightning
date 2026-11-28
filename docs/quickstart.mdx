@@ -32,8 +32,9 @@ pnpm exec lightning run sum.test.ts
 pnpm exec lightning watch
 ```
 
-Use `run` in CI. With neither `run` nor `watch`, Lightning defaults to watch
-mode in an interactive terminal and a single run in CI or without a terminal.
+Use `run` in CI. Without a subcommand or an explicit `--watch` or `--no-watch`
+flag, Lightning watches when standard input is a terminal (TTY) and runs once
+otherwise.
 
 ## Choose where tests run
 
